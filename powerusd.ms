@@ -210,6 +210,111 @@ buttonText:"Clone PowerUSD UI"
 		return instanceGroup[1]
 	)
 
+	fn appendUniqueNode arr node =
+	(
+		if node != undefined and findItem arr node == 0 do append arr node
+		return arr
+	)
+
+	fn isCameraNode node =
+	(
+		if node == undefined then return false
+		return ((superClassOf node == camera) or (isKindOf node Camera))
+	)
+
+	fn getOwningCameraForTarget targetNode =
+	(
+		if targetNode == undefined then return undefined
+		if targetNode.parent != undefined and isCameraNode targetNode.parent then return targetNode.parent
+
+		for cam in cameras do
+		(
+			if isProperty cam #target and cam.target == targetNode do return cam
+		)
+		return undefined
+	)
+
+	fn isCameraTargetNode node =
+	(
+		(isKindOf node TargetObject) and (getOwningCameraForTarget node != undefined)
+	)
+
+	fn collectCameraBundle node cameraNodes =
+	(
+		if isCameraNode node then
+		(
+			appendUniqueNode cameraNodes node
+			if isProperty node #target do appendUniqueNode cameraNodes node.target
+			return true
+		)
+
+		if isCameraTargetNode node then
+		(
+			appendUniqueNode cameraNodes node
+			appendUniqueNode cameraNodes (getOwningCameraForTarget node)
+			return true
+		)
+		return false
+	)
+
+	-- Force all camera exports into a single dedicated set.
+	fn partitionCamerasToSingleExport exportSets cameraFileName:"Cameras" =
+	(
+		local cameraNodes = #()
+		local hasCameras = false
+
+		for i = 1 to exportSets.count do
+		(
+			local item = exportSets[i]
+			if item.rootNodes == undefined or item.rootNodes.count == 0 do continue
+
+			local filteredNodes = #()
+			for n in item.rootNodes do
+			(
+				if collectCameraBundle n cameraNodes then
+					hasCameras = true
+				else
+					append filteredNodes n
+			)
+
+			item.rootNodes = filteredNodes
+			exportSets[i] = item
+		)
+
+		if hasCameras and cameraNodes.count > 0 then
+		(
+			local existingIndex = 0
+			for i = 1 to exportSets.count do
+			(
+				if exportSets[i].exportName == cameraFileName do
+				(
+					existingIndex = i
+					exit
+				)
+			)
+
+			if existingIndex > 0 then
+			(
+				local existing = exportSets[existingIndex]
+				local merged = if existing.rootNodes != undefined then existing.rootNodes else #()
+				for n in cameraNodes do appendUniqueNode merged n
+				existing.rootNodes = merged
+				existing.moveRoot = undefined
+				existing.subFolder = undefined
+				existing.parentName = undefined
+				exportSets[existingIndex] = existing
+				format "Camera forcing: merged into '%' (% nodes)\n" cameraFileName merged.count
+			)
+			else
+			(
+				append exportSets (ExportNodeData exportName:cameraFileName rootNodes:cameraNodes moveRoot:undefined subFolder:undefined parentName:undefined)
+				format "Camera forcing: routed % camera node(s) into '%'\n" cameraNodes.count cameraFileName
+			)
+		)
+
+		return exportSets
+	)
+
 
 	fn captureViewportThumb nodes filePath thumbSize:256 =
 	(
@@ -258,6 +363,11 @@ buttonText:"Clone PowerUSD UI"
 						if not abortBatch do
 						(
 							local item = exportSets[i]
+							if item.rootNodes == undefined or item.rootNodes.count == 0 then
+							(
+								format "Skipping metadata-only set '%'\n" item.exportName
+								continue
+							)
 							
 							local exportDir = outDir
 							if item.subFolder != undefined and item.subFolder != "" then
@@ -351,14 +461,27 @@ buttonText:"Clone PowerUSD UI"
 		local attributedObjects = #()
 		for obj in rawSelection do
 		(
-			local root = getHierarchyRoot obj
-			if findItem attributedObjects root == 0 do append attributedObjects root
+			local cameraNode = undefined
+			if isKindOf obj Camera then
+				cameraNode = obj
+			else if (isKindOf obj TargetObject) and obj.parent != undefined and isKindOf obj.parent Camera then
+				cameraNode = obj.parent
 
-			local allDescendants = getAllDescendants root
-			for desc in allDescendants do
+			if cameraNode != undefined then
 			(
-				if hasUSDProperties desc and findItem attributedObjects desc == 0 do
-					append attributedObjects desc
+				if findItem attributedObjects cameraNode == 0 do append attributedObjects cameraNode
+			)
+			else
+			(
+				local root = getHierarchyRoot obj
+				if findItem attributedObjects root == 0 do append attributedObjects root
+
+				local allDescendants = getAllDescendants root
+				for desc in allDescendants do
+				(
+					if hasUSDProperties desc and findItem attributedObjects desc == 0 do
+						append attributedObjects desc
+				)
 			)
 		)
 
@@ -426,6 +549,9 @@ buttonText:"Clone PowerUSD UI"
 	-- Rule: nearest ancestor with USD Properties, otherwise the hierarchy root.
 	fn findAdvancedExportUnitForObject obj =
 	(
+		if isKindOf obj Camera then return obj
+		if (isKindOf obj TargetObject) and obj.parent != undefined and isKindOf obj.parent Camera then return obj.parent
+
 		local current = obj
 		while current != undefined do
 		(
@@ -714,7 +840,16 @@ buttonText:"Clone PowerUSD UI"
 				(buildAdvancedSingleExportSets rawSelection "" writeMetadata:false)
 			else
 				(buildAdvancedExportSets rawSelection "" writeMetadata:false)
+			previewSets = partitionCamerasToSingleExport previewSets cameraFileName:"Cameras"
 			printHierarchyPreview previewSets
+
+			if g_PowerUSD_lastDir == undefined do g_PowerUSD_lastDir = (getDir #export)
+			local outDir = getSavePath caption:"Select Output Directory for _hierarchy.txt" initialDir:g_PowerUSD_lastDir
+			if outDir != undefined then
+			(
+				g_PowerUSD_lastDir = outDir
+				writeHierarchyMetadata previewSets outDir
+			)
 		)
 
 		on btn_export_sets pressed do
@@ -739,6 +874,7 @@ buttonText:"Clone PowerUSD UI"
 				if setNodes.count > 0 do
 					append exportSets (ExportNodeData exportName:setName rootNodes:setNodes moveRoot:undefined subFolder:undefined parentName:undefined)
 			)
+			exportSets = partitionCamerasToSingleExport exportSets cameraFileName:"Cameras"
 
 			local currentSel = selection as array
 			local exportSuccess = performBatchExport exportSets outDir false chk_thumbnail.checked spn_startFrame.value spn_endFrame.value spn_fps.value
@@ -775,6 +911,7 @@ buttonText:"Clone PowerUSD UI"
 
 			local exportSets = #()
 			local isAdvancedMode = (rdo_mode.state == 2)
+			local shouldWriteHierarchyMeta = false
 
 			-- MODE: Advanced (P_USDparamobj -> separate files, hierarchy from metadata)
 			if isAdvancedMode then
@@ -786,7 +923,8 @@ buttonText:"Clone PowerUSD UI"
 				)
 				else
 				(
-					exportSets = buildAdvancedExportSets rawSelection outDir writeMetadata:true
+					exportSets = buildAdvancedExportSets rawSelection outDir writeMetadata:false
+					shouldWriteHierarchyMeta = true
 				)
 			)
 			-- SIMPLE MODE: Layers (all objects on layer exported together, MaxUSD handles instancing)
@@ -882,6 +1020,9 @@ buttonText:"Clone PowerUSD UI"
 					append exportSets (ExportNodeData exportName:master.name rootNodes:group moveRoot:master subFolder:undefined parentName:undefined)
 				)
 			)
+
+			exportSets = partitionCamerasToSingleExport exportSets cameraFileName:"Cameras"
+			if shouldWriteHierarchyMeta and exportSets.count > 0 do writeHierarchyMetadata exportSets outDir
 
 			local currentSel = selection as array
 			-- Only apply move-to-origin in Simple mode
