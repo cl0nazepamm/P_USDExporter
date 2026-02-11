@@ -339,7 +339,7 @@ buttonText:"Clone PowerUSD UI"
 		format "Wrote hierarchy metadata: %\n" metaPath
 	)
 
-	fn setAssemblerPythonVars outDir defaultPrimName =
+	fn setAssemblerPythonVars outDir defaultPrimName startFrame endFrame fps =
 	(
 		local safeOutDir = substituteString outDir "'" "\\'"
 		python.Execute ("_powerusd_export_dir = r'" + safeOutDir + "'")
@@ -355,6 +355,10 @@ buttonText:"Clone PowerUSD UI"
 		(
 			python.Execute "_powerusd_default_prim = None"
 		)
+
+		python.Execute ("_powerusd_start_frame = " + (startFrame as integer) as string)
+		python.Execute ("_powerusd_end_frame = " + (endFrame as integer) as string)
+		python.Execute ("_powerusd_fps = " + (fps as integer) as string)
 	)
 
 	rollout rPowerUSD "Power USD Exporter" width:260
@@ -536,7 +540,7 @@ buttonText:"Clone PowerUSD UI"
 					local assemblerPath = scriptsDir + "Clone_USD_StageAssembler.py"
 					if doesFileExist assemblerPath do
 					(
-						setAssemblerPythonVars outDir (if chk_rootPrim.checked then edt_defaultPrim.text else "")
+						setAssemblerPythonVars outDir (if chk_rootPrim.checked then edt_defaultPrim.text else "") spn_startFrame.value spn_endFrame.value spn_fps.value
 						python.ExecuteFile assemblerPath
 					)
 				)
@@ -753,7 +757,7 @@ buttonText:"Clone PowerUSD UI"
 					local assemblerPath = scriptsDir + "Clone_USD_StageAssembler.py"
 					if doesFileExist assemblerPath do
 					(
-						setAssemblerPythonVars outDir (if chk_rootPrim.checked then edt_defaultPrim.text else "")
+						setAssemblerPythonVars outDir (if chk_rootPrim.checked then edt_defaultPrim.text else "") spn_startFrame.value spn_endFrame.value spn_fps.value
 						python.ExecuteFile assemblerPath
 					)
 				)

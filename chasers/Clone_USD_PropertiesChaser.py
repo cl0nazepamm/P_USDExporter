@@ -21,7 +21,7 @@ from pymxs import runtime as mxs
 import traceback
 import re
 
-CHASER_VERSION = "3.6"
+CHASER_VERSION = "3.8"
 
 
 class USDPropertiesChaser(maxUsd.ExportChaser):
@@ -239,6 +239,12 @@ class USDPropertiesChaser(maxUsd.ExportChaser):
             print("  No children under root wrapper, skipping")
             return
 
+        root_prim = self.stage.GetPrimAtPath("/root")
+        keep_skel_root = bool(root_prim and root_prim.IsValid() and root_prim.GetTypeName() == "SkelRoot")
+        if keep_skel_root:
+            self._flatten_scene_wrapper_under_skel_root(layer, current_path)
+            return
+
         # Separate content from materials
         mtl_scope_names = {"mtl", "Looks", "Materials"}
         main_children = []
@@ -319,6 +325,139 @@ class USDPropertiesChaser(maxUsd.ExportChaser):
         remapped_specs = self._remap_primspec_path_lists(layer, strip_prefix, nest_target, mtl_names)
         if remapped_specs:
             print(f"    Remapped class/inherit arcs on {remapped_specs} prim spec(s)")
+        remapped_joint_attrs, remapped_joint_tokens = self._remap_skeleton_joint_tokens(
+            strip_prefix, nest_target, mtl_names, default_name
+        )
+        if remapped_joint_attrs:
+            print(f"    Remapped skel:joints on {remapped_joint_attrs} prim(s), {remapped_joint_tokens} token(s)")
+
+    def _move_children_to_parent(self, layer, src_parent_path, dst_parent_path):
+        """
+        Move all direct children from src parent to dst parent using BatchNamespaceEdit,
+        with CopySpec fallback.
+        """
+        src_spec = layer.GetPrimAtPath(src_parent_path)
+        if not src_spec:
+            return []
+
+        child_names = [c.name for c in src_spec.nameChildren]
+        if not child_names:
+            return []
+
+        edit = Sdf.BatchNamespaceEdit()
+        for child_name in child_names:
+            src = src_parent_path.AppendChild(child_name)
+            dst = dst_parent_path.AppendChild(child_name)
+            if src != dst:
+                edit.Add(src, dst)
+                print(f"    Move {src} -> {dst}")
+
+        if layer.Apply(edit):
+            print("    BatchNamespaceEdit applied OK")
+            return child_names
+
+        print("    BatchNamespaceEdit FAILED — falling back to CopySpec")
+        moved = []
+        for child_name in child_names:
+            src = src_parent_path.AppendChild(child_name)
+            dst = dst_parent_path.AppendChild(child_name)
+            ok = Sdf.CopySpec(layer, src, layer, dst)
+            if ok:
+                self.stage.RemovePrim(src)
+                moved.append(child_name)
+        return moved
+
+    def _flatten_scene_wrapper_under_skel_root(self, layer, current_path):
+        """
+        Skeletal exports must keep /root as SkelRoot.
+        If /root/Scene_* wraps the actual character, flatten that wrapper into /root.
+        """
+        root_path = Sdf.Path("/root")
+        mtl_scope_names = {"mtl", "Looks", "Materials"}
+
+        if str(current_path) != "/root":
+            print(f"  SkelRoot mode: collapse {current_path} -> /root")
+            self._move_children_to_parent(layer, current_path, root_path)
+            try:
+                self.stage.RemovePrim(current_path)
+            except Exception as e:
+                print(f"    Could not remove nested wrapper {current_path}: {e}")
+
+        root_spec = layer.GetPrimAtPath(root_path)
+        if not root_spec:
+            print("  Missing /root spec after SkelRoot collapse, skipping")
+            return
+
+        root_children = list(root_spec.nameChildren)
+        if not root_children:
+            print("  No children under /root, keeping SkelRoot unchanged")
+            layer.defaultPrim = "root"
+            return
+
+        has_skeleton_scope = False
+        content_candidates = []
+        for child_spec in root_children:
+            child_name = child_spec.name
+            child_path = root_path.AppendChild(child_name)
+            child_prim = self.stage.GetPrimAtPath(child_path)
+            child_type = child_prim.GetTypeName() if child_prim and child_prim.IsValid() else ""
+
+            if child_name == "Bones" or child_type == "Skeleton":
+                has_skeleton_scope = True
+
+            if child_name in mtl_scope_names or child_name == "Bones" or child_name == "root":
+                continue
+            if child_type == "Skeleton":
+                continue
+            if child_spec.specifier == Sdf.SpecifierClass or child_name.startswith("_class_"):
+                continue
+            content_candidates.append(child_name)
+
+        scene_wrapper_name = None
+        if has_skeleton_scope and len(content_candidates) == 1:
+            candidate = content_candidates[0]
+            candidate_spec = layer.GetPrimAtPath(root_path.AppendChild(candidate))
+            candidate_children = list(candidate_spec.nameChildren) if candidate_spec else []
+            is_scene_wrapper = bool(re.match(r"^scene($|_)", candidate, re.IGNORECASE))
+            if is_scene_wrapper and candidate_children:
+                scene_wrapper_name = candidate
+
+        if scene_wrapper_name:
+            scene_path = root_path.AppendChild(scene_wrapper_name)
+            print(f"  SkelRoot mode: flatten {scene_path} -> /root")
+            moved_children = self._move_children_to_parent(layer, scene_path, root_path)
+
+            try:
+                self.stage.RemovePrim(scene_path)
+                print(f"    Removed {scene_path}")
+            except Exception as e:
+                print(f"    Could not remove scene wrapper {scene_path}: {e}")
+
+            if moved_children:
+                strip_prefix = str(scene_path)
+                remapped = self._remap_paths_in_place(
+                    strip_prefix, None, [], replacement_prefix="/root"
+                )
+                if remapped:
+                    print(f"    Remapped {remapped} path(s)")
+                remapped_specs = self._remap_primspec_path_lists(
+                    layer, strip_prefix, None, [], replacement_prefix="/root"
+                )
+                if remapped_specs:
+                    print(f"    Remapped class/inherit arcs on {remapped_specs} prim spec(s)")
+                remapped_joint_attrs, remapped_joint_tokens = self._remap_skeleton_joint_tokens(
+                    strip_prefix,
+                    None,
+                    [],
+                    None,
+                    replacement_prefix="/root",
+                    relative_strip_prefix=scene_wrapper_name
+                )
+                if remapped_joint_attrs:
+                    print(f"    Remapped skel:joints on {remapped_joint_attrs} prim(s), {remapped_joint_tokens} token(s)")
+
+        layer.defaultPrim = "root"
+        print("  defaultPrim = root (SkelRoot)")
 
     def _strip_root_fallback(self, layer, wrapper_path, main_children, mtl_children,
                              default_name, nest_mtl):
@@ -352,8 +491,9 @@ class USDPropertiesChaser(maxUsd.ExportChaser):
         nest_target = default_name if mtl_nested_ok else None
         self._remap_paths_in_place(strip_prefix, nest_target, mtl_children)
         self._remap_primspec_path_lists(layer, strip_prefix, nest_target, mtl_children)
+        self._remap_skeleton_joint_tokens(strip_prefix, nest_target, mtl_children, default_name)
 
-    def _remap_path_str(self, path_str, strip_prefix, nest_target, mtl_names):
+    def _remap_path_str(self, path_str, strip_prefix, nest_target, mtl_names, replacement_prefix=None):
         """Compute new path string. Returns remapped string or None if unchanged."""
         if nest_target and mtl_names:
             for mtl_name in mtl_names:
@@ -361,12 +501,19 @@ class USDPropertiesChaser(maxUsd.ExportChaser):
                 if path_str.startswith(mtl_prefix + "/") or path_str == mtl_prefix:
                     return "/" + nest_target + "/" + mtl_name + path_str[len(mtl_prefix):]
         if path_str.startswith(strip_prefix + "/"):
-            return path_str[len(strip_prefix):]
+            suffix = path_str[len(strip_prefix):]
+            if replacement_prefix is None:
+                return suffix
+            if replacement_prefix == "/":
+                return suffix
+            return replacement_prefix.rstrip("/") + suffix
         if path_str == strip_prefix:
+            if replacement_prefix is not None:
+                return replacement_prefix if replacement_prefix else "/"
             return "/"
         return None
 
-    def _remap_paths_in_place(self, strip_prefix, nest_target, mtl_names):
+    def _remap_paths_in_place(self, strip_prefix, nest_target, mtl_names, replacement_prefix=None):
         """Remap paths using Usd Stage API. Fallback for when BatchNamespaceEdit fails."""
         remapped = 0
         for prim in self.stage.TraverseAll():
@@ -377,7 +524,9 @@ class USDPropertiesChaser(maxUsd.ExportChaser):
                 new_targets = []
                 changed = False
                 for t in targets:
-                    new_str = self._remap_path_str(str(t), strip_prefix, nest_target, mtl_names)
+                    new_str = self._remap_path_str(
+                        str(t), strip_prefix, nest_target, mtl_names, replacement_prefix
+                    )
                     if new_str is not None:
                         new_targets.append(Sdf.Path(new_str))
                         changed = True
@@ -394,7 +543,9 @@ class USDPropertiesChaser(maxUsd.ExportChaser):
                 new_conns = []
                 changed = False
                 for c in connections:
-                    new_str = self._remap_path_str(str(c), strip_prefix, nest_target, mtl_names)
+                    new_str = self._remap_path_str(
+                        str(c), strip_prefix, nest_target, mtl_names, replacement_prefix
+                    )
                     if new_str is not None:
                         new_conns.append(Sdf.Path(new_str))
                         changed = True
@@ -412,7 +563,7 @@ class USDPropertiesChaser(maxUsd.ExportChaser):
             for nested in self._iter_prim_specs(child_spec):
                 yield nested
 
-    def _remap_path_list_op(self, path_list_op, strip_prefix, nest_target, mtl_names):
+    def _remap_path_list_op(self, path_list_op, strip_prefix, nest_target, mtl_names, replacement_prefix=None):
         """Remap all items in an Sdf path list-op. Returns True if any item changed."""
         changed_any = False
         for field_name in ("explicitItems", "addedItems", "prependedItems", "appendedItems", "deletedItems"):
@@ -426,7 +577,9 @@ class USDPropertiesChaser(maxUsd.ExportChaser):
             remapped_items = []
             changed_field = False
             for item in items:
-                new_str = self._remap_path_str(str(item), strip_prefix, nest_target, mtl_names)
+                new_str = self._remap_path_str(
+                    str(item), strip_prefix, nest_target, mtl_names, replacement_prefix
+                )
                 if new_str is not None:
                     remapped_items.append(Sdf.Path(new_str))
                     changed_field = True
@@ -439,7 +592,7 @@ class USDPropertiesChaser(maxUsd.ExportChaser):
 
         return changed_any
 
-    def _remap_primspec_path_lists(self, layer, strip_prefix, nest_target, mtl_names):
+    def _remap_primspec_path_lists(self, layer, strip_prefix, nest_target, mtl_names, replacement_prefix=None):
         """
         Remap prim-spec path list-ops that BatchNamespaceEdit can leave stale,
         especially inherit/specialize arcs used by MaxUSD class-based instances.
@@ -455,13 +608,116 @@ class USDPropertiesChaser(maxUsd.ExportChaser):
                         list_op = None
                     if not list_op:
                         continue
-                    if self._remap_path_list_op(list_op, strip_prefix, nest_target, mtl_names):
+                    if self._remap_path_list_op(
+                        list_op, strip_prefix, nest_target, mtl_names, replacement_prefix
+                    ):
                         changed_spec = True
 
                 if changed_spec:
                     remapped_specs += 1
 
         return remapped_specs
+
+    def _format_joint_token_path(self, path_str, had_leading_slash):
+        """Return token with original absolute/relative style."""
+        if had_leading_slash:
+            return path_str
+        return path_str.lstrip("/")
+
+    def _remap_skeleton_joint_token(
+        self,
+        token_str,
+        strip_prefix,
+        nest_target,
+        mtl_names,
+        content_root,
+        replacement_prefix=None,
+        relative_strip_prefix=None
+    ):
+        """
+        Remap a single skeleton joint token. Tries the same root-strip/material remap
+        flow first, then prefixes the content root (e.g. Scene_Example/) only when a
+        matching prim exists at that prefixed path.
+        """
+        token = str(token_str)
+        if not token:
+            return token
+
+        had_leading_slash = token.startswith("/")
+
+        # 1) Reuse existing path remapper (supports moved mtl scopes and stripped /root).
+        remapped = self._remap_path_str(token, strip_prefix, nest_target, mtl_names, replacement_prefix)
+        if remapped is None and not had_leading_slash:
+            remapped = self._remap_path_str("/" + token, strip_prefix, nest_target, mtl_names, replacement_prefix)
+        if remapped is None and not had_leading_slash and relative_strip_prefix:
+            rel_prefix = relative_strip_prefix.strip("/")
+            if token.startswith(rel_prefix + "/"):
+                remapped = token[len(rel_prefix) + 1:]
+        if remapped is not None:
+            return self._format_joint_token_path(remapped, had_leading_slash)
+
+        # 2) If token points to a missing prim, try prefixing content root.
+        if not content_root:
+            return token
+
+        token_abs = token if had_leading_slash else "/" + token
+        if self.stage.GetPrimAtPath(token_abs).IsValid():
+            return token
+
+        prefixed_abs = "/" + content_root + token_abs
+        if self.stage.GetPrimAtPath(prefixed_abs).IsValid():
+            return self._format_joint_token_path(prefixed_abs, had_leading_slash)
+
+        return token
+
+    def _remap_skeleton_joint_tokens(
+        self,
+        strip_prefix,
+        nest_target,
+        mtl_names,
+        content_root,
+        replacement_prefix=None,
+        relative_strip_prefix=None
+    ):
+        """Remap token[] joints authored on skeleton-related prims."""
+        remapped_attrs = 0
+        remapped_tokens = 0
+        joint_attr_names = {"skel:joints", "joints"}
+
+        for prim in self.stage.TraverseAll():
+            for attr in prim.GetAttributes():
+                attr_name = attr.GetName()
+                if attr_name not in joint_attr_names:
+                    continue
+                if str(attr.GetTypeName()) != "token[]":
+                    continue
+
+                tokens = attr.Get()
+                if not tokens:
+                    continue
+
+                new_tokens = []
+                changed = False
+                for token in tokens:
+                    new_token = self._remap_skeleton_joint_token(
+                        token,
+                        strip_prefix,
+                        nest_target,
+                        mtl_names,
+                        content_root,
+                        replacement_prefix,
+                        relative_strip_prefix
+                    )
+                    new_tokens.append(new_token)
+                    if new_token != str(token):
+                        changed = True
+                        remapped_tokens += 1
+
+                if changed:
+                    attr.Set(new_tokens)
+                    remapped_attrs += 1
+
+        return remapped_attrs, remapped_tokens
 
     # -------------------------------------------------------------------------
     # Variant processing

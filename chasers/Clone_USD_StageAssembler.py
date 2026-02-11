@@ -281,7 +281,7 @@ def validate_variants(children, hierarchy_tree):
     return None
 
 
-def auto_assemble_stage(export_dir, default_prim_name=None):
+def auto_assemble_stage(export_dir, default_prim_name=None, start_frame=None, end_frame=None, fps=None):
     """Assemble USD files into a stage using hierarchy metadata."""
     print("=" * 60)
     print("Clone USD Stage Assembler")
@@ -316,6 +316,16 @@ def auto_assemble_stage(export_dir, default_prim_name=None):
     stage = Usd.Stage.CreateInMemory()
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
     UsdGeom.SetStageMetersPerUnit(stage, 0.01)
+
+    if fps is not None:
+        stage.SetFramesPerSecond(float(fps))
+        stage.SetTimeCodesPerSecond(float(fps))
+    if start_frame is not None:
+        stage.SetStartTimeCode(float(start_frame))
+    if end_frame is not None:
+        stage.SetEndTimeCode(float(end_frame))
+    if fps is not None or start_frame is not None:
+        print(f"Time: {start_frame}-{end_frame} @ {fps} fps")
 
     assembly_root_path = Sdf.Path("/")
     configured_default_prim = None
@@ -464,25 +474,8 @@ def auto_assemble_stage(export_dir, default_prim_name=None):
                     group_xform = UsdGeom.Xform.Define(stage, group_prim_path)
                     created_prims[group_key] = group_prim_path
 
-                    # Inherit transform from primary mesh so pivot is correct
-                    primary_file = None
-                    for item in group:
-                        if not item['purpose'] or item['purpose'] == 'render':
-                            primary_file = find_usd_file(item['name'], export_dir)
-                            if primary_file:
-                                break
-                    if not primary_file:
-                        for item in group:
-                            primary_file = find_usd_file(item['name'], export_dir)
-                            if primary_file:
-                                break
-
-                    group_xform_data = read_prim_transform(primary_file) if primary_file else None
-                    if group_xform_data:
-                        apply_transform_to_prim(group_xform.GetPrim(), group_xform_data)
-                        print(f"  + {group_prim_path} (purpose group, transform inherited)")
-                    else:
-                        print(f"  + {group_prim_path} (purpose group)")
+                    # Transforms are carried by the referenced USD files
+                    print(f"  + {group_prim_path} (purpose group)")
 
                     # Group items by purpose
                     # When proxy/guide siblings exist, unsuffixed items become "render"
@@ -547,9 +540,6 @@ def auto_assemble_stage(export_dir, default_prim_name=None):
                                         purpose_prim.GetPayloads().AddPayload(ref_path)
                                     else:
                                         purpose_prim.GetReferences().AddReference(ref_path)
-                                    # Reset transform - parent group carries it
-                                    if group_xform_data:
-                                        reset_prim_transform(purpose_prim)
 
                                 apply_prim_properties(purpose_prim, item_props)
                                 print(f"        {{{var_name}}} -> {ref_path}")
@@ -573,10 +563,6 @@ def auto_assemble_stage(export_dir, default_prim_name=None):
                                     purpose_prim.GetPayloads().AddPayload(ref_path)
                                 else:
                                     purpose_prim.GetReferences().AddReference(ref_path)
-
-                                # Reset child transform (parent group carries it now)
-                                if group_xform_data:
-                                    reset_prim_transform(purpose_prim)
 
                                 # Set purpose
                                 if purpose_name in ['render', 'proxy', 'guide']:
@@ -708,25 +694,8 @@ def auto_assemble_stage(export_dir, default_prim_name=None):
                 flat_group_xform = UsdGeom.Xform.Define(stage, group_prim_path)
                 created_prims[base_name] = group_prim_path
 
-                # Inherit transform from primary mesh
-                flat_primary_file = None
-                for item in group:
-                    if not item['purpose'] or item['purpose'] == 'render':
-                        flat_primary_file = item.get('filepath') or find_usd_file(item['name'], export_dir)
-                        if flat_primary_file:
-                            break
-                if not flat_primary_file:
-                    for item in group:
-                        flat_primary_file = item.get('filepath') or find_usd_file(item['name'], export_dir)
-                        if flat_primary_file:
-                            break
-
-                flat_group_xform_data = read_prim_transform(flat_primary_file) if flat_primary_file else None
-                if flat_group_xform_data:
-                    apply_transform_to_prim(flat_group_xform.GetPrim(), flat_group_xform_data)
-                    print(f"  + {group_prim_path} (purpose group, transform inherited)")
-                else:
-                    print(f"  + {group_prim_path} (purpose group)")
+                # Transforms are carried by the referenced USD files
+                print(f"  + {group_prim_path} (purpose group)")
 
                 # Group by purpose
                 # When proxy/guide siblings exist, unsuffixed items become "render"
@@ -774,9 +743,6 @@ def auto_assemble_stage(export_dir, default_prim_name=None):
                                     purpose_prim.GetPayloads().AddPayload(ref_path)
                                 else:
                                     purpose_prim.GetReferences().AddReference(ref_path)
-                                # Reset transform - parent group carries it
-                                if flat_group_xform_data:
-                                    reset_prim_transform(purpose_prim)
 
                             apply_prim_properties(purpose_prim, item_props)
                             print(f"        {{{var_name}}} -> {ref_path}")
@@ -798,10 +764,6 @@ def auto_assemble_stage(export_dir, default_prim_name=None):
                             purpose_prim.GetPayloads().AddPayload(ref_path)
                         else:
                             purpose_prim.GetReferences().AddReference(ref_path)
-
-                        # Reset child transform (parent group carries it now)
-                        if flat_group_xform_data:
-                            reset_prim_transform(purpose_prim)
 
                         if purpose_name in ['render', 'proxy', 'guide']:
                             imageable = UsdGeom.Imageable(purpose_prim)
@@ -871,6 +833,19 @@ if __name__ == "__main__":
             default_prim_name = _powerusd_default_prim
         except NameError:
             default_prim_name = None
-        auto_assemble_stage(export_dir, default_prim_name=default_prim_name)
+        try:
+            start_frame = _powerusd_start_frame
+        except NameError:
+            start_frame = None
+        try:
+            end_frame = _powerusd_end_frame
+        except NameError:
+            end_frame = None
+        try:
+            fps = _powerusd_fps
+        except NameError:
+            fps = None
+        auto_assemble_stage(export_dir, default_prim_name=default_prim_name,
+                            start_frame=start_frame, end_frame=end_frame, fps=fps)
     except NameError:
         print("Error: _powerusd_export_dir not set")
