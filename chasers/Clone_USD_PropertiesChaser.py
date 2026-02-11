@@ -21,7 +21,7 @@ from pymxs import runtime as mxs
 import traceback
 import re
 
-CHASER_VERSION = "3.8"
+CHASER_VERSION = "3.9"
 
 
 class USDPropertiesChaser(maxUsd.ExportChaser):
@@ -456,8 +456,165 @@ class USDPropertiesChaser(maxUsd.ExportChaser):
                 if remapped_joint_attrs:
                     print(f"    Remapped skel:joints on {remapped_joint_attrs} prim(s), {remapped_joint_tokens} token(s)")
 
+        # Deterministic hardening for skeletal exports.
+        self._harden_skeleton_bindings(scene_wrapper_name)
+
         layer.defaultPrim = "root"
         print("  defaultPrim = root (SkelRoot)")
+
+    def _normalize_joint_token(self, token_str, scene_wrapper_name=None, character_root_name=None):
+        """
+        Normalize joint token to a stable relative path form used by MaxUSD:
+        Character/... (without /root or scene wrapper prefixes).
+        """
+        token = str(token_str)
+        if not token:
+            return token
+
+        work = token.lstrip("/")
+
+        if work.startswith("root/"):
+            work = work[len("root/"):]
+
+        if scene_wrapper_name:
+            wrapper = scene_wrapper_name.strip("/")
+            wrapper_prefix = wrapper + "/"
+            if work.startswith(wrapper_prefix):
+                work = work[len(wrapper_prefix):]
+            else:
+                marker = "/" + wrapper_prefix
+                idx = work.find(marker)
+                if idx != -1:
+                    work = work[idx + len(marker):]
+
+        if character_root_name:
+            marker = character_root_name + "/"
+            if work != character_root_name and not work.startswith(marker):
+                idx = work.find(marker)
+                if idx != -1:
+                    work = work[idx:]
+
+        return work if work else token.lstrip("/")
+
+    def _harden_skeleton_bindings(self, scene_wrapper_name=None):
+        """
+        Hardening pass for skeletal exports:
+          1) Skeleton rel skel:animationSource -> /root/Bones/Animations (or first valid)
+          2) Skinned prim rel skel:skeleton -> /root/Bones (or chosen skeleton)
+          3) Normalize token[] joints to relative Character/... style
+        """
+        root_prim = self.stage.GetPrimAtPath("/root")
+        if not root_prim or not root_prim.IsValid():
+            print("  Hardening skipped: /root not found")
+            return
+
+        skeleton_candidates = []
+        for child in root_prim.GetChildren():
+            if child.GetTypeName() == "Skeleton":
+                skeleton_candidates.append(child)
+
+        if not skeleton_candidates:
+            for prim in self.stage.TraverseAll():
+                if prim.GetTypeName() == "Skeleton" and str(prim.GetPath()).startswith("/root/"):
+                    skeleton_candidates.append(prim)
+
+        if not skeleton_candidates:
+            print("  Hardening skipped: no Skeleton under /root")
+            return
+
+        skeleton_prim = None
+        for sk in skeleton_candidates:
+            if sk.GetName() == "Bones":
+                skeleton_prim = sk
+                break
+        if skeleton_prim is None:
+            skeleton_prim = skeleton_candidates[0]
+
+        skeleton_path = skeleton_prim.GetPath()
+
+        anim_prim = None
+        for child in skeleton_prim.GetChildren():
+            if child.GetTypeName() == "SkelAnimation" and child.GetName() == "Animations":
+                anim_prim = child
+                break
+        if anim_prim is None:
+            for child in skeleton_prim.GetChildren():
+                if child.GetTypeName() == "SkelAnimation":
+                    anim_prim = child
+                    break
+
+        if anim_prim and anim_prim.IsValid():
+            anim_rel = skeleton_prim.GetRelationship("skel:animationSource")
+            if not anim_rel:
+                anim_rel = skeleton_prim.CreateRelationship("skel:animationSource", False)
+            anim_rel.SetTargets([anim_prim.GetPath()])
+            print(f"    Hardened skel:animationSource = {anim_prim.GetPath()}")
+
+        character_root_name = None
+        for child in root_prim.GetChildren():
+            name = child.GetName()
+            type_name = child.GetTypeName()
+            if name in {"Bones", "mtl", "Looks", "Materials", "root"}:
+                continue
+            if type_name == "Skeleton":
+                continue
+            character_root_name = name
+            break
+
+        hardened_skel_rels = 0
+        normalized_joint_attrs = 0
+        normalized_joint_tokens = 0
+
+        joint_attr_names = {"skel:joints", "joints"}
+        for prim in self.stage.TraverseAll():
+            prim_path_str = str(prim.GetPath())
+            if not prim_path_str.startswith("/root/"):
+                continue
+
+            has_skinning = (
+                prim.HasAttribute("primvars:skel:jointIndices")
+                or prim.HasAttribute("primvars:skel:jointWeights")
+                or prim.HasAttribute("skel:joints")
+            )
+
+            if has_skinning:
+                skel_rel = prim.GetRelationship("skel:skeleton")
+                if not skel_rel:
+                    skel_rel = prim.CreateRelationship("skel:skeleton", False)
+                skel_rel.SetTargets([skeleton_path])
+                hardened_skel_rels += 1
+
+            for attr in prim.GetAttributes():
+                if attr.GetName() not in joint_attr_names:
+                    continue
+                if str(attr.GetTypeName()) != "token[]":
+                    continue
+
+                tokens = attr.Get()
+                if not tokens:
+                    continue
+
+                new_tokens = []
+                changed = False
+                for token in tokens:
+                    new_token = self._normalize_joint_token(
+                        token,
+                        scene_wrapper_name=scene_wrapper_name,
+                        character_root_name=character_root_name
+                    )
+                    new_tokens.append(new_token)
+                    if new_token != str(token):
+                        changed = True
+                        normalized_joint_tokens += 1
+
+                if changed:
+                    attr.Set(new_tokens)
+                    normalized_joint_attrs += 1
+
+        if hardened_skel_rels:
+            print(f"    Hardened skel:skeleton on {hardened_skel_rels} prim(s) -> {skeleton_path}")
+        if normalized_joint_attrs:
+            print(f"    Normalized joint tokens on {normalized_joint_attrs} prim(s), {normalized_joint_tokens} token(s)")
 
     def _strip_root_fallback(self, layer, wrapper_path, main_children, mtl_children,
                              default_name, nest_mtl):

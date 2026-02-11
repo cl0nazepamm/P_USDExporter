@@ -339,6 +339,190 @@ buttonText:"Clone PowerUSD UI"
 		format "Wrote hierarchy metadata: %\n" metaPath
 	)
 
+	-- Build Advanced mode export sets (shared by export and dry preview)
+	fn buildAdvancedExportSets rawSelection outDir writeMetadata:true =
+	(
+		local exportSets = #()
+		local processedObjects = #()
+		local organizationalNodes = #()
+
+		-- Find all objects with USD Properties in selection
+		-- In Advanced mode, hierarchy roots are treated as attributed even without USD Properties
+		local attributedObjects = #()
+		for obj in rawSelection do
+		(
+			local root = getHierarchyRoot obj
+			if findItem attributedObjects root == 0 do append attributedObjects root
+
+			local allDescendants = getAllDescendants root
+			for desc in allDescendants do
+			(
+				if hasUSDProperties desc and findItem attributedObjects desc == 0 do
+					append attributedObjects desc
+			)
+		)
+
+		-- Collect all organizational ancestors (groups/helpers without USD Properties)
+		for obj in attributedObjects do
+		(
+			local ancestors = getAllAncestors obj
+			for anc in ancestors do
+			(
+				if findItem organizationalNodes anc == 0 and findItem attributedObjects anc == 0 do
+					append organizationalNodes anc
+			)
+		)
+		format "Found % organizational nodes (groups/helpers)\n" organizationalNodes.count
+
+		-- Add organizational nodes to hierarchy metadata (no USD file, just structure)
+		for org in organizationalNodes do
+		(
+			local orgParent = findSceneParent org
+			local parentName = if orgParent != undefined then orgParent.name else undefined
+			append exportSets (ExportNodeData exportName:org.name rootNodes:#() moveRoot:undefined subFolder:undefined parentName:parentName)
+			format "  Organizational node: '%' parent: '%'\n" org.name (if parentName != undefined then parentName else "(root)")
+		)
+
+		-- Instance detection: group attributed objects by base object
+		local instanceGroups = groupByInstances attributedObjects
+		format "Advanced mode: found % unique base objects from % attributed objects\n" instanceGroups.count attributedObjects.count
+
+		-- Process each instance group - export ALL instances together, MaxUSD handles instancing
+		for group in instanceGroups do
+		(
+			local master = selectMasterInstance group
+
+			if findItem processedObjects master == 0 do
+			(
+				-- Mark all in group as processed
+				for obj in group do append processedObjects obj
+
+				-- Get layer folder path from master
+				local layerPath = getLayerPath master.layer
+				local folderPath = buildFolderPath layerPath
+
+				-- Collect ALL nodes to export: all instances + their descendants without USD Properties
+				local nodesToExport = #()
+				for obj in group do join nodesToExport (getDescendantsWithoutAttr obj)
+
+				-- Find actual scene parent of master
+				local sceneParent = findSceneParent master
+				local parentName = if sceneParent != undefined then sceneParent.name else undefined
+
+				if group.count > 1 then
+					format "  Instance group '%': % instances -> exporting together\n" master.name group.count
+				else
+					format "  Export '%' parent: '%'\n" master.name (if parentName != undefined then parentName else "(root)")
+
+				append exportSets (ExportNodeData exportName:master.name rootNodes:nodesToExport moveRoot:master subFolder:folderPath parentName:parentName)
+			)
+		)
+
+		if writeMetadata and exportSets.count > 0 do writeHierarchyMetadata exportSets outDir
+		return exportSets
+	)
+
+	-- Find the export unit root that Advanced mode would use for a given object.
+	-- Rule: nearest ancestor with USD Properties, otherwise the hierarchy root.
+	fn findAdvancedExportUnitForObject obj =
+	(
+		local current = obj
+		while current != undefined do
+		(
+			if hasUSDProperties current do return current
+			if current.parent == undefined do return current
+			current = current.parent
+		)
+		return obj
+	)
+
+	-- Build Advanced-mode compatible export sets, but only for selected units.
+	-- Useful for incremental re-export of single assets.
+	fn buildAdvancedSingleExportSets rawSelection outDir writeMetadata:false =
+	(
+		local exportSets = #()
+		local processedObjects = #()
+		local organizationalNodes = #()
+
+		-- Resolve selected objects to their Advanced export units
+		local attributedObjects = #()
+		for obj in rawSelection do
+		(
+			local unitRoot = findAdvancedExportUnitForObject obj
+			if unitRoot != undefined and findItem attributedObjects unitRoot == 0 do
+				append attributedObjects unitRoot
+		)
+
+		if attributedObjects.count == 0 then return exportSets
+
+		-- Collect organizational ancestors for hierarchy metadata compatibility
+		for obj in attributedObjects do
+		(
+			local ancestors = getAllAncestors obj
+			for anc in ancestors do
+			(
+				if findItem organizationalNodes anc == 0 and findItem attributedObjects anc == 0 do
+					append organizationalNodes anc
+			)
+		)
+		format "Advanced single mode: % export unit(s), % organizational node(s)\n" attributedObjects.count organizationalNodes.count
+
+		for org in organizationalNodes do
+		(
+			local orgParent = findSceneParent org
+			local parentName = if orgParent != undefined then orgParent.name else undefined
+			append exportSets (ExportNodeData exportName:org.name rootNodes:#() moveRoot:undefined subFolder:undefined parentName:parentName)
+		)
+
+		-- Keep the same instance grouping behavior as Advanced mode
+		local instanceGroups = groupByInstances attributedObjects
+		for group in instanceGroups do
+		(
+			local master = selectMasterInstance group
+			if findItem processedObjects master == 0 do
+			(
+				for obj in group do append processedObjects obj
+
+				local layerPath = getLayerPath master.layer
+				local folderPath = buildFolderPath layerPath
+
+				local nodesToExport = #()
+				for obj in group do join nodesToExport (getDescendantsWithoutAttr obj)
+
+				local sceneParent = findSceneParent master
+				local parentName = if sceneParent != undefined then sceneParent.name else undefined
+
+				append exportSets (ExportNodeData exportName:master.name rootNodes:nodesToExport moveRoot:master subFolder:folderPath parentName:parentName)
+			)
+		)
+
+		if writeMetadata and exportSets.count > 0 do writeHierarchyMetadata exportSets outDir
+		return exportSets
+	)
+
+	-- Dry preview for _hierarchy.txt lines without running exporter
+	fn printHierarchyPreview exportSets =
+	(
+		format "\n=== DRY _hierarchy PREVIEW ===\n"
+		if exportSets.count == 0 then
+		(
+			format "(no entries)\n"
+			format "=== END PREVIEW ===\n\n"
+			return false
+		)
+
+		-- Format: childName|parentName|subFolder
+		for item in exportSets do
+		(
+			local parentStr = if item.parentName != undefined then item.parentName else ""
+			local subFolderStr = if item.subFolder != undefined then item.subFolder else ""
+			format "%|%|%\n" item.exportName parentStr subFolderStr
+		)
+
+		format "=== END PREVIEW (% entries) ===\n\n" exportSets.count
+		return true
+	)
+
 	fn setAssemblerPythonVars outDir defaultPrimName startFrame endFrame fps =
 	(
 		local safeOutDir = substituteString outDir "'" "\\'"
@@ -376,6 +560,8 @@ buttonText:"Clone PowerUSD UI"
 		(
 			radiobuttons rdo_mode labels:#("Simple", "Advanced") columns:2 default:1 \
 				tooltip:"Simple: Export hierarchies as-is, move to origin option.\nAdvanced: P_USDparamobj hierarchy detection, variants, purposes."
+			checkbox chk_advSingle "Single Export (Advanced)" checked:false \
+				tooltip:"Advanced only. Exports only selected Advanced units for incremental updates."
 			label lbl_modeInfo "" align:#left
 		)
 
@@ -403,6 +589,7 @@ buttonText:"Clone PowerUSD UI"
 		)
 
 		button btn_export "EXPORT SELECTED" width:220 height:40 highlightColor:(color 0 200 0)
+		button btn_dryHierarchy "DRY PRINT _HIERARCHY" width:220 height:24
 		button btn_export_sets "EXPORT SELECTION SETS" width:220 height:30
 		button btn_addUSDProps "Add USD Properties" width:220 height:24 tooltip:"Add USD Attribute Holder to selected objects (P_USDparamobj)."
 		button btn_genProxy "Generate Cube Proxies" width:220 height:24 tooltip:"Create bounding box proxies for selected _RENDER objects."
@@ -413,11 +600,13 @@ buttonText:"Clone PowerUSD UI"
 			chk_layers.enabled = isSimple
 			chk_hierarchy.enabled = isSimple
 			chk_origin.enabled = isSimple
+			chk_advSingle.enabled = (not isSimple)
+			if isSimple do chk_advSingle.checked = false
 
 			if isSimple then
 				lbl_modeInfo.text = "Exports hierarchies as-is."
 			else
-				lbl_modeInfo.text = "P_USDparamobj -> separate USD files."
+				lbl_modeInfo.text = "P_USDparamobj -> separate USD files (optional single export)."
 		)
 
 		on rdo_mode changed state do updateModeUI()
@@ -506,6 +695,28 @@ buttonText:"Clone PowerUSD UI"
 			format "Generated % cube proxy(s) with USD Properties\n" created
 		)
 
+		on btn_dryHierarchy pressed do
+		(
+			local rawSelection = selection as array
+			if rawSelection.count == 0 then
+			(
+				messageBox "No objects selected."
+				return false
+			)
+
+			if rdo_mode.state != 2 then
+			(
+				messageBox "Dry hierarchy preview is available in Advanced mode only."
+				return false
+			)
+
+			local previewSets = if chk_advSingle.checked then
+				(buildAdvancedSingleExportSets rawSelection "" writeMetadata:false)
+			else
+				(buildAdvancedExportSets rawSelection "" writeMetadata:false)
+			printHierarchyPreview previewSets
+		)
+
 		on btn_export_sets pressed do
 		(
 			if selectionSets.count == 0 then (messageBox "No Selection Sets found."; return false)
@@ -568,87 +779,15 @@ buttonText:"Clone PowerUSD UI"
 			-- MODE: Advanced (P_USDparamobj -> separate files, hierarchy from metadata)
 			if isAdvancedMode then
 			(
-				local processedObjects = #()
-				local organizationalNodes = #()
-
-				-- Find all objects with USD Properties in selection
-				-- In Advanced mode, hierarchy roots are treated as attributed even without USD Properties
-				local attributedObjects = #()
-				for obj in rawSelection do
+				if chk_advSingle.checked then
 				(
-					local root = getHierarchyRoot obj
-					-- Add hierarchy root as attributed even if it has no USD Properties
-					if findItem attributedObjects root == 0 do
-						append attributedObjects root
-
-					local allDescendants = getAllDescendants root
-					for desc in allDescendants do
-					(
-						if hasUSDProperties desc and findItem attributedObjects desc == 0 do
-							append attributedObjects desc
-					)
+					format "Advanced single export: hierarchy metadata file is not rewritten.\n"
+					exportSets = buildAdvancedSingleExportSets rawSelection outDir writeMetadata:false
 				)
-
-				-- Collect all organizational ancestors (groups/helpers without USD Properties)
-				for obj in attributedObjects do
+				else
 				(
-					local ancestors = getAllAncestors obj
-					for anc in ancestors do
-					(
-						if findItem organizationalNodes anc == 0 and findItem attributedObjects anc == 0 do
-							append organizationalNodes anc
-					)
+					exportSets = buildAdvancedExportSets rawSelection outDir writeMetadata:true
 				)
-				format "Found % organizational nodes (groups/helpers)\n" organizationalNodes.count
-
-				-- Add organizational nodes to hierarchy metadata (no USD file, just structure)
-				for org in organizationalNodes do
-				(
-					local orgParent = findSceneParent org
-					local parentName = if orgParent != undefined then orgParent.name else undefined
-					append exportSets (ExportNodeData exportName:org.name rootNodes:#() moveRoot:undefined subFolder:undefined parentName:parentName)
-					format "  Organizational node: '%' parent: '%'\n" org.name (if parentName != undefined then parentName else "(root)")
-				)
-
-				-- Instance detection: group attributed objects by base object
-				local instanceGroups = groupByInstances attributedObjects
-				format "Advanced mode: found % unique base objects from % attributed objects\n" instanceGroups.count attributedObjects.count
-
-				-- Process each instance group - export ALL instances together, MaxUSD handles instancing
-				for group in instanceGroups do
-				(
-					local master = selectMasterInstance group
-
-					if findItem processedObjects master == 0 do
-					(
-						-- Mark all in group as processed
-						for obj in group do append processedObjects obj
-
-						-- Get layer folder path from master
-						local layerPath = getLayerPath master.layer
-						local folderPath = buildFolderPath layerPath
-
-						-- Collect ALL nodes to export: all instances + their descendants without USD Properties
-						local nodesToExport = #()
-						for obj in group do
-							join nodesToExport (getDescendantsWithoutAttr obj)
-
-						-- Find actual scene parent of master
-						local sceneParent = findSceneParent master
-						local parentName = if sceneParent != undefined then sceneParent.name else undefined
-
-						if group.count > 1 then
-							format "  Instance group '%': % instances -> exporting together\n" master.name group.count
-						else
-							format "  Export '%' parent: '%'\n" master.name (if parentName != undefined then parentName else "(root)")
-
-						append exportSets (ExportNodeData exportName:master.name rootNodes:nodesToExport moveRoot:master subFolder:folderPath parentName:parentName)
-					)
-				)
-
-				-- Write hierarchy metadata
-				if exportSets.count > 0 do
-					writeHierarchyMetadata exportSets outDir
 			)
 			-- SIMPLE MODE: Layers (all objects on layer exported together, MaxUSD handles instancing)
 			else if chk_layers.checked then
