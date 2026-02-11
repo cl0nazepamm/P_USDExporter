@@ -16,6 +16,7 @@ Filename suffixes affect assembly:
 from pxr import Usd, UsdGeom, Sdf, Kind, Gf
 import os
 import re
+import json
 
 
 def read_prim_transform(usd_file):
@@ -120,25 +121,40 @@ def parse_name_suffixes(name):
 
 
 def read_hierarchy_metadata(export_dir):
-    """Read _hierarchy.txt and return dict of {name: parent_name}."""
-    meta_path = os.path.join(export_dir, "_hierarchy.txt")
+    """Read _hierarchy.json and return dict of {name: parent_name}."""
+    meta_path = os.path.join(export_dir, "_hierarchy.json")
+
+    # Fallback to legacy _hierarchy.txt
+    if not os.path.exists(meta_path):
+        txt_path = os.path.join(export_dir, "_hierarchy.txt")
+        if os.path.exists(txt_path):
+            print(f"Reading legacy hierarchy: {txt_path}")
+            hierarchy = {}
+            with open(txt_path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    parts = line.split('|')
+                    if len(parts) >= 2:
+                        name = parts[0]
+                        parent = parts[1] if parts[1] else None
+                        hierarchy[name] = parent
+            print(f"  Found {len(hierarchy)} entries (legacy txt)")
+            return hierarchy
+        return {}
+
+    print(f"Reading hierarchy: {meta_path}")
     hierarchy = {}
+    with open(meta_path, 'r') as f:
+        data = json.load(f)
 
-    if os.path.exists(meta_path):
-        print(f"Reading hierarchy: {meta_path}")
-        with open(meta_path, 'r') as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith('#'):
-                    continue
-                parts = line.split('|')
-                if len(parts) >= 2:
-                    name = parts[0]
-                    parent = parts[1] if parts[1] else None
-                    hierarchy[name] = parent
-                    print(f"    '{name}' -> parent: '{parent}'")
-        print(f"  Found {len(hierarchy)} entries")
+    for name, entry in data.items():
+        parent = entry.get("parent") if isinstance(entry, dict) else entry
+        hierarchy[name] = parent
+        print(f"    '{name}' -> parent: '{parent}'")
 
+    print(f"  Found {len(hierarchy)} entries")
     return hierarchy
 
 
@@ -281,7 +297,7 @@ def validate_variants(children, hierarchy_tree):
     return None
 
 
-def auto_assemble_stage(export_dir, default_prim_name=None, start_frame=None, end_frame=None, fps=None):
+def auto_assemble_stage(export_dir, default_prim_name=None, start_frame=None, end_frame=None, fps=None, inline_cameras=True):
     """Assemble USD files into a stage using hierarchy metadata."""
     print("=" * 60)
     print("Clone USD Stage Assembler")
@@ -368,8 +384,120 @@ def auto_assemble_stage(export_dir, default_prim_name=None, start_frame=None, en
             })
         return groups
 
+    def inline_camera_bundle_to_parent(parent_path, usd_file, expected_name):
+        """
+        Inline camera-only bundles so cameras become direct prims in this stage.
+        This avoids composition arcs like /Cameras -> @Cameras.usd@ in final stage.
+        Returns (prim_path, prim) for the first copied prim, or None.
+        """
+        try:
+            src_stage = Usd.Stage.Open(usd_file)
+            if not src_stage:
+                return None
+
+            scope_prim = src_stage.GetDefaultPrim()
+            if (not scope_prim or not scope_prim.IsValid()) and expected_name:
+                scope_prim = src_stage.GetPrimAtPath(f"/{expected_name}")
+            if not scope_prim or not scope_prim.IsValid():
+                roots = list(src_stage.GetPseudoRoot().GetChildren())
+                if len(roots) == 1:
+                    scope_prim = roots[0]
+
+            if not scope_prim or not scope_prim.IsValid():
+                return None
+
+            camera_or_target = []
+            seen_paths = set()
+            camera_names = set()
+            has_camera = False
+            has_non_camera_content = False
+            has_target = False
+
+            for prim in Usd.PrimRange(scope_prim):
+                if not prim or not prim.IsValid():
+                    continue
+
+                type_name = prim.GetTypeName()
+                prim_name = prim.GetName()
+                lower_name = prim_name.lower()
+                is_camera = prim.IsA(UsdGeom.Camera) or type_name == "Camera"
+                is_target = (type_name == "Xform") and (lower_name.endswith("target") or lower_name.endswith("_target"))
+                is_non_camera_content = type_name in ("Mesh", "SkelRoot", "Skeleton", "SkelAnimation")
+
+                if is_non_camera_content:
+                    has_non_camera_content = True
+
+                if is_camera:
+                    has_camera = True
+                    camera_names.add(prim_name.lower())
+                if is_target:
+                    has_target = True
+
+                if is_camera or is_target:
+                    path_key = str(prim.GetPath())
+                    if path_key not in seen_paths:
+                        camera_or_target.append(prim)
+                        seen_paths.add(path_key)
+
+            expected_lower = expected_name.lower() if expected_name else ""
+            expected_is_target = expected_lower.endswith("target") or expected_lower.endswith("_target")
+
+            if has_non_camera_content:
+                return None
+
+            # Normal path: camera bundle (camera + optional target)
+            # Legacy fallback: target-only camera target files.
+            if (not has_camera) and not (expected_is_target and has_target):
+                return None
+
+            # Some exporters place target nodes as pseudo-root siblings.
+            for root_child in src_stage.GetPseudoRoot().GetChildren():
+                if not root_child or not root_child.IsValid():
+                    continue
+                if root_child.GetTypeName() != "Xform":
+                    continue
+                child_name = root_child.GetName().lower()
+                for cam_name in camera_names:
+                    if child_name == f"{cam_name}_target" or child_name == f"{cam_name}target":
+                        path_key = str(root_child.GetPath())
+                        if path_key not in seen_paths:
+                            camera_or_target.append(root_child)
+                            seen_paths.add(path_key)
+                        break
+
+            src_layer = src_stage.GetRootLayer()
+            dst_layer = stage.GetRootLayer()
+            ref_path = get_relative_path(usd_file, export_dir)
+            first_copied = None
+
+            for src_prim in camera_or_target:
+                src_path = src_prim.GetPath()
+                dest_name = make_valid_prim_name(src_prim.GetName())
+                dest_path = parent_path.AppendChild(dest_name)
+
+                existing = stage.GetPrimAtPath(dest_path)
+                if existing and existing.IsValid():
+                    stage.RemovePrim(dest_path)
+
+                Sdf.CopySpec(src_layer, src_path, dst_layer, dest_path)
+                copied_prim = stage.GetPrimAtPath(dest_path)
+
+                print(f"  + {dest_path} [inline camera] <- {ref_path}:{src_path}")
+                if first_copied is None:
+                    first_copied = (dest_path, copied_prim)
+
+            return first_copied
+        except Exception as e:
+            print(f"    Warning: camera inlining failed for {usd_file}: {e}")
+            return None
+
     def add_reference_to_parent(parent_path, usd_file, expected_name, use_payload=False):
         """Add a USD file as a clean reference under a parent."""
+        if inline_cameras:
+            inline_result = inline_camera_bundle_to_parent(parent_path, usd_file, expected_name)
+            if inline_result:
+                return inline_result
+
         ref_path = get_relative_path(usd_file, export_dir)
 
         # Create prim with the expected name
@@ -845,7 +973,12 @@ if __name__ == "__main__":
             fps = _powerusd_fps
         except NameError:
             fps = None
+        try:
+            inline_cameras = bool(_powerusd_inline_cameras)
+        except NameError:
+            inline_cameras = True
         auto_assemble_stage(export_dir, default_prim_name=default_prim_name,
-                            start_frame=start_frame, end_frame=end_frame, fps=fps)
+                            start_frame=start_frame, end_frame=end_frame, fps=fps,
+                            inline_cameras=inline_cameras)
     except NameError:
         print("Error: _powerusd_export_dir not set")

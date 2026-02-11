@@ -6,315 +6,8 @@ buttonText:"Clone PowerUSD UI"
 (
 	persistent global g_PowerUSD_lastDir
 
-	struct ExportNodeData
-	(
-		exportName,
-		rootNodes,
-		moveRoot,
-		subFolder,
-		parentName  -- For hierarchy reconstruction in Advanced mode
-	)
-
-
-	fn getHierarchyRoot obj =
-	(
-		local currentObj = obj
-		while (currentObj.parent != undefined) do
-			currentObj = currentObj.parent
-		return currentObj
-	)
-
-	fn getAllDescendants rootNode =
-	(
-		local collection = #(rootNode)
-		local idx = 1
-		while idx <= collection.count do
-		(
-			local c = collection[idx]
-			join collection c.children
-			idx += 1
-		)
-		return collection
-	)
-
-	fn getLayerPath layerObj =
-	(
-		local path = #()
-		local currentLayer = layerObj
-		local maxDepth = 20  -- Safety limit
-		local depth = 0
-
-		while currentLayer != undefined and depth < maxDepth do
-		(
-			local layerName = currentLayer.name
-			-- Skip default layer "0" and empty names
-			if layerName != "0" and layerName != "" and layerName != undefined do
-				insertItem layerName path 1
-
-			-- Get parent layer
-			local parentLayer = currentLayer.getParent()
-
-			-- Stop if parent is same as current (shouldn't happen, but safety check)
-			if parentLayer == currentLayer do parentLayer = undefined
-
-			currentLayer = parentLayer
-			depth += 1
-		)
-		return path
-	)
-
-	fn buildFolderPath layerPath =
-	(
-		if layerPath.count == 0 then return ""
-		local result = ""
-		for i = 1 to layerPath.count do
-		(
-			if i > 1 then result += "\\"
-			result += layerPath[i]
-		)
-		return result
-	)
-
-	-- Check if object has USD Properties modifier
-	fn hasUSDProperties obj =
-	(
-		for mod in obj.modifiers do
-			if mod.name == "USD Properties" do return true
-		return false
-	)
-
-	-- Find nearest ancestor with USD Properties
-	fn findAttributedParent obj =
-	(
-		local current = obj.parent
-		while current != undefined do
-		(
-			if hasUSDProperties current do return current
-			current = current.parent
-		)
-		return undefined
-	)
-
-	-- Find immediate scene parent (group head or actual parent)
-	fn findSceneParent obj =
-	(
-		if obj.parent != undefined then
-		(
-			local p = obj.parent
-			-- If parent is a group member, get the group head
-			while (isGroupMember p) do p = p.parent
-			return p
-		)
-		return undefined
-	)
-
-	-- Get all ancestors up to root (for organizational hierarchy)
-	fn getAllAncestors obj =
-	(
-		local ancestors = #()
-		local current = findSceneParent obj
-		while current != undefined do
-		(
-			append ancestors current
-			current = findSceneParent current
-		)
-		return ancestors
-	)
-
-	-- Get all descendants that DON'T have USD Properties (they stay with parent)
-	fn getDescendantsWithoutAttr rootNode =
-	(
-		local result = #(rootNode)
-		local toProcess = #()
-		for c in rootNode.children do append toProcess c
-
-		while toProcess.count > 0 do
-		(
-			local current = toProcess[1]
-			deleteItem toProcess 1
-
-			-- Only include if it doesn't have USD Properties
-			if not (hasUSDProperties current) then
-			(
-				append result current
-				for c in current.children do append toProcess c
-			)
-			-- If it has USD Properties, stop traversing this branch (it exports separately)
-		)
-		return result
-	)
-
-	-- Check if object is a geometry type that can be instanced
-	fn isInstancableGeometry obj =
-	(
-		superClassOf obj == GeometryClass and
-		obj.baseObject != undefined and
-		not (isGroupHead obj) and
-		not (isGroupMember obj)
-	)
-
-	-- Group objects by their base object (instance detection)
-	-- Returns: #( #(master, instance1, instance2...), #(master2, inst...), ... )
-	fn groupByInstances objects =
-	(
-		local processed = #{}
-		local groups = #()
-
-		for i = 1 to objects.count do
-		(
-			if not processed[i] do
-			(
-				local obj = objects[i]
-
-				if isInstancableGeometry obj then
-				(
-					local baseObj = obj.baseObject
-					local group = #(obj)
-					processed[i] = true
-
-					-- Find all other instances
-					for j = (i + 1) to objects.count do
-					(
-						if not processed[j] do
-						(
-							local other = objects[j]
-							if isInstancableGeometry other and other.baseObject == baseObj do
-							(
-								append group other
-								processed[j] = true
-							)
-						)
-					)
-
-					append groups group
-				)
-				else
-				(
-					-- Non-instancable object, treat as single item
-					append groups #(obj)
-					processed[i] = true
-				)
-			)
-		)
-
-		return groups
-	)
-
-	-- Select the master instance from a group (first one found, or one with USD Properties)
-	fn selectMasterInstance instanceGroup =
-	(
-		-- Prefer one with USD Properties
-		for obj in instanceGroup do
-			if hasUSDProperties obj do return obj
-		-- Otherwise first one
-		return instanceGroup[1]
-	)
-
-	fn appendUniqueNode arr node =
-	(
-		if node != undefined and findItem arr node == 0 do append arr node
-		return arr
-	)
-
-	fn isCameraNode node =
-	(
-		if node == undefined then return false
-		return ((superClassOf node == camera) or (isKindOf node Camera))
-	)
-
-	fn getOwningCameraForTarget targetNode =
-	(
-		if targetNode == undefined then return undefined
-		if targetNode.parent != undefined and isCameraNode targetNode.parent then return targetNode.parent
-
-		for cam in cameras do
-		(
-			if isProperty cam #target and cam.target == targetNode do return cam
-		)
-		return undefined
-	)
-
-	fn isCameraTargetNode node =
-	(
-		(isKindOf node TargetObject) and (getOwningCameraForTarget node != undefined)
-	)
-
-	fn collectCameraBundle node cameraNodes =
-	(
-		if isCameraNode node then
-		(
-			appendUniqueNode cameraNodes node
-			if isProperty node #target do appendUniqueNode cameraNodes node.target
-			return true
-		)
-
-		if isCameraTargetNode node then
-		(
-			appendUniqueNode cameraNodes node
-			appendUniqueNode cameraNodes (getOwningCameraForTarget node)
-			return true
-		)
-		return false
-	)
-
-	-- Force all camera exports into a single dedicated set.
-	fn partitionCamerasToSingleExport exportSets cameraFileName:"Cameras" =
-	(
-		local cameraNodes = #()
-		local hasCameras = false
-
-		for i = 1 to exportSets.count do
-		(
-			local item = exportSets[i]
-			if item.rootNodes == undefined or item.rootNodes.count == 0 do continue
-
-			local filteredNodes = #()
-			for n in item.rootNodes do
-			(
-				if collectCameraBundle n cameraNodes then
-					hasCameras = true
-				else
-					append filteredNodes n
-			)
-
-			item.rootNodes = filteredNodes
-			exportSets[i] = item
-		)
-
-		if hasCameras and cameraNodes.count > 0 then
-		(
-			local existingIndex = 0
-			for i = 1 to exportSets.count do
-			(
-				if exportSets[i].exportName == cameraFileName do
-				(
-					existingIndex = i
-					exit
-				)
-			)
-
-			if existingIndex > 0 then
-			(
-				local existing = exportSets[existingIndex]
-				local merged = if existing.rootNodes != undefined then existing.rootNodes else #()
-				for n in cameraNodes do appendUniqueNode merged n
-				existing.rootNodes = merged
-				existing.moveRoot = undefined
-				existing.subFolder = undefined
-				existing.parentName = undefined
-				exportSets[existingIndex] = existing
-				format "Camera forcing: merged into '%' (% nodes)\n" cameraFileName merged.count
-			)
-			else
-			(
-				append exportSets (ExportNodeData exportName:cameraFileName rootNodes:cameraNodes moveRoot:undefined subFolder:undefined parentName:undefined)
-				format "Camera forcing: routed % camera node(s) into '%'\n" cameraNodes.count cameraFileName
-			)
-		)
-
-		return exportSets
-	)
-
+	-- Load shared hierarchy builder (ExportNodeData, buildAdvancedExportSets, writeHierarchyMetadata, etc.)
+	fileIn ((getDir #userScripts) + "/CloneTools/Clone_USD_HierarchyBuilder.ms")
 
 	fn captureViewportThumb nodes filePath thumbSize:256 =
 	(
@@ -368,14 +61,14 @@ buttonText:"Clone PowerUSD UI"
 								format "Skipping metadata-only set '%'\n" item.exportName
 								continue
 							)
-							
+
 							local exportDir = outDir
 							if item.subFolder != undefined and item.subFolder != "" then
 							(
 								exportDir = outDir + "\\" + item.subFolder
 								makeDir exportDir all:true
 							)
-							
+
 							local filePath = exportDir + "\\" + item.exportName + ".usd"
 							local thumbPath = exportDir + "\\" + item.exportName + "_thumb.png"
 							local originalPos = [0, 0, 0]
@@ -424,232 +117,13 @@ buttonText:"Clone PowerUSD UI"
 					)
 				)
 			)
-			
+
 			return (not abortBatch)
 		)
 		return false
 	)
 
-	-- Write hierarchy metadata for Assembler
-	fn writeHierarchyMetadata exportSets outDir =
-	(
-		local metaPath = outDir + "\\_hierarchy.txt"
-		local f = createFile metaPath
-		
-		-- Format: childName|parentName|subFolder
-		-- parentName is empty if root level
-		for item in exportSets do
-		(
-			local parentStr = if item.parentName != undefined then item.parentName else ""
-			local subFolderStr = if item.subFolder != undefined then item.subFolder else ""
-			format "%|%|%\n" item.exportName parentStr subFolderStr to:f
-		)
-		
-		close f
-		format "Wrote hierarchy metadata: %\n" metaPath
-	)
-
-	-- Build Advanced mode export sets (shared by export and dry preview)
-	fn buildAdvancedExportSets rawSelection outDir writeMetadata:true =
-	(
-		local exportSets = #()
-		local processedObjects = #()
-		local organizationalNodes = #()
-
-		-- Find all objects with USD Properties in selection
-		-- In Advanced mode, hierarchy roots are treated as attributed even without USD Properties
-		local attributedObjects = #()
-		for obj in rawSelection do
-		(
-			local cameraNode = undefined
-			if isKindOf obj Camera then
-				cameraNode = obj
-			else if (isKindOf obj TargetObject) and obj.parent != undefined and isKindOf obj.parent Camera then
-				cameraNode = obj.parent
-
-			if cameraNode != undefined then
-			(
-				if findItem attributedObjects cameraNode == 0 do append attributedObjects cameraNode
-			)
-			else
-			(
-				local root = getHierarchyRoot obj
-				if findItem attributedObjects root == 0 do append attributedObjects root
-
-				local allDescendants = getAllDescendants root
-				for desc in allDescendants do
-				(
-					if hasUSDProperties desc and findItem attributedObjects desc == 0 do
-						append attributedObjects desc
-				)
-			)
-		)
-
-		-- Collect all organizational ancestors (groups/helpers without USD Properties)
-		for obj in attributedObjects do
-		(
-			local ancestors = getAllAncestors obj
-			for anc in ancestors do
-			(
-				if findItem organizationalNodes anc == 0 and findItem attributedObjects anc == 0 do
-					append organizationalNodes anc
-			)
-		)
-		format "Found % organizational nodes (groups/helpers)\n" organizationalNodes.count
-
-		-- Add organizational nodes to hierarchy metadata (no USD file, just structure)
-		for org in organizationalNodes do
-		(
-			local orgParent = findSceneParent org
-			local parentName = if orgParent != undefined then orgParent.name else undefined
-			append exportSets (ExportNodeData exportName:org.name rootNodes:#() moveRoot:undefined subFolder:undefined parentName:parentName)
-			format "  Organizational node: '%' parent: '%'\n" org.name (if parentName != undefined then parentName else "(root)")
-		)
-
-		-- Instance detection: group attributed objects by base object
-		local instanceGroups = groupByInstances attributedObjects
-		format "Advanced mode: found % unique base objects from % attributed objects\n" instanceGroups.count attributedObjects.count
-
-		-- Process each instance group - export ALL instances together, MaxUSD handles instancing
-		for group in instanceGroups do
-		(
-			local master = selectMasterInstance group
-
-			if findItem processedObjects master == 0 do
-			(
-				-- Mark all in group as processed
-				for obj in group do append processedObjects obj
-
-				-- Get layer folder path from master
-				local layerPath = getLayerPath master.layer
-				local folderPath = buildFolderPath layerPath
-
-				-- Collect ALL nodes to export: all instances + their descendants without USD Properties
-				local nodesToExport = #()
-				for obj in group do join nodesToExport (getDescendantsWithoutAttr obj)
-
-				-- Find actual scene parent of master
-				local sceneParent = findSceneParent master
-				local parentName = if sceneParent != undefined then sceneParent.name else undefined
-
-				if group.count > 1 then
-					format "  Instance group '%': % instances -> exporting together\n" master.name group.count
-				else
-					format "  Export '%' parent: '%'\n" master.name (if parentName != undefined then parentName else "(root)")
-
-				append exportSets (ExportNodeData exportName:master.name rootNodes:nodesToExport moveRoot:master subFolder:folderPath parentName:parentName)
-			)
-		)
-
-		if writeMetadata and exportSets.count > 0 do writeHierarchyMetadata exportSets outDir
-		return exportSets
-	)
-
-	-- Find the export unit root that Advanced mode would use for a given object.
-	-- Rule: nearest ancestor with USD Properties, otherwise the hierarchy root.
-	fn findAdvancedExportUnitForObject obj =
-	(
-		if isKindOf obj Camera then return obj
-		if (isKindOf obj TargetObject) and obj.parent != undefined and isKindOf obj.parent Camera then return obj.parent
-
-		local current = obj
-		while current != undefined do
-		(
-			if hasUSDProperties current do return current
-			if current.parent == undefined do return current
-			current = current.parent
-		)
-		return obj
-	)
-
-	-- Build Advanced-mode compatible export sets, but only for selected units.
-	-- Useful for incremental re-export of single assets.
-	fn buildAdvancedSingleExportSets rawSelection outDir writeMetadata:false =
-	(
-		local exportSets = #()
-		local processedObjects = #()
-		local organizationalNodes = #()
-
-		-- Resolve selected objects to their Advanced export units
-		local attributedObjects = #()
-		for obj in rawSelection do
-		(
-			local unitRoot = findAdvancedExportUnitForObject obj
-			if unitRoot != undefined and findItem attributedObjects unitRoot == 0 do
-				append attributedObjects unitRoot
-		)
-
-		if attributedObjects.count == 0 then return exportSets
-
-		-- Collect organizational ancestors for hierarchy metadata compatibility
-		for obj in attributedObjects do
-		(
-			local ancestors = getAllAncestors obj
-			for anc in ancestors do
-			(
-				if findItem organizationalNodes anc == 0 and findItem attributedObjects anc == 0 do
-					append organizationalNodes anc
-			)
-		)
-		format "Advanced single mode: % export unit(s), % organizational node(s)\n" attributedObjects.count organizationalNodes.count
-
-		for org in organizationalNodes do
-		(
-			local orgParent = findSceneParent org
-			local parentName = if orgParent != undefined then orgParent.name else undefined
-			append exportSets (ExportNodeData exportName:org.name rootNodes:#() moveRoot:undefined subFolder:undefined parentName:parentName)
-		)
-
-		-- Keep the same instance grouping behavior as Advanced mode
-		local instanceGroups = groupByInstances attributedObjects
-		for group in instanceGroups do
-		(
-			local master = selectMasterInstance group
-			if findItem processedObjects master == 0 do
-			(
-				for obj in group do append processedObjects obj
-
-				local layerPath = getLayerPath master.layer
-				local folderPath = buildFolderPath layerPath
-
-				local nodesToExport = #()
-				for obj in group do join nodesToExport (getDescendantsWithoutAttr obj)
-
-				local sceneParent = findSceneParent master
-				local parentName = if sceneParent != undefined then sceneParent.name else undefined
-
-				append exportSets (ExportNodeData exportName:master.name rootNodes:nodesToExport moveRoot:master subFolder:folderPath parentName:parentName)
-			)
-		)
-
-		if writeMetadata and exportSets.count > 0 do writeHierarchyMetadata exportSets outDir
-		return exportSets
-	)
-
-	-- Dry preview for _hierarchy.txt lines without running exporter
-	fn printHierarchyPreview exportSets =
-	(
-		format "\n=== DRY _hierarchy PREVIEW ===\n"
-		if exportSets.count == 0 then
-		(
-			format "(no entries)\n"
-			format "=== END PREVIEW ===\n\n"
-			return false
-		)
-
-		-- Format: childName|parentName|subFolder
-		for item in exportSets do
-		(
-			local parentStr = if item.parentName != undefined then item.parentName else ""
-			local subFolderStr = if item.subFolder != undefined then item.subFolder else ""
-			format "%|%|%\n" item.exportName parentStr subFolderStr
-		)
-
-		format "=== END PREVIEW (% entries) ===\n\n" exportSets.count
-		return true
-	)
-
-	fn setAssemblerPythonVars outDir defaultPrimName startFrame endFrame fps =
+	fn setAssemblerPythonVars outDir defaultPrimName startFrame endFrame fps inlineCameras:true =
 	(
 		local safeOutDir = substituteString outDir "'" "\\'"
 		python.Execute ("_powerusd_export_dir = r'" + safeOutDir + "'")
@@ -669,6 +143,11 @@ buttonText:"Clone PowerUSD UI"
 		python.Execute ("_powerusd_start_frame = " + (startFrame as integer) as string)
 		python.Execute ("_powerusd_end_frame = " + (endFrame as integer) as string)
 		python.Execute ("_powerusd_fps = " + (fps as integer) as string)
+
+		if inlineCameras then
+			python.Execute "_powerusd_inline_cameras = True"
+		else
+			python.Execute "_powerusd_inline_cameras = False"
 	)
 
 	rollout rPowerUSD "Power USD Exporter" width:260
@@ -707,15 +186,15 @@ buttonText:"Clone PowerUSD UI"
 			checkbox chk_thumbnail "Generate Thumbnails" checked:false
 		)
 
-		group "Assembly"
+		group "Assembler"
 		(
 			checkbox chk_autoAssemble "Auto Assemble Stage" checked:true tooltip:"Create .usda stage referencing all exports.\nRebuilds hierarchy from metadata."
 			checkbox chk_rootPrim "Root Prim" checked:false tooltip:"Wrap everything under a root prim.\nUncheck to place assets at stage root."
 			edittext edt_defaultPrim "Default Prim:" text:"World" fieldWidth:140 tooltip:"Top-level assembly prim name (e.g. World)."
+			checkbox chk_inlineCameras "Inline Cameras" checked:true tooltip:"Write camera data directly into .usda stage.\nUncheck to use USD references for cameras."
 		)
 
 		button btn_export "EXPORT SELECTED" width:220 height:40 highlightColor:(color 0 200 0)
-		button btn_dryHierarchy "DRY PRINT _HIERARCHY" width:220 height:24
 		button btn_export_sets "EXPORT SELECTION SETS" width:220 height:30
 		button btn_addUSDProps "Add USD Properties" width:220 height:24 tooltip:"Add USD Attribute Holder to selected objects (P_USDparamobj)."
 		button btn_genProxy "Generate Cube Proxies" width:220 height:24 tooltip:"Create bounding box proxies for selected _RENDER objects."
@@ -821,37 +300,6 @@ buttonText:"Clone PowerUSD UI"
 			format "Generated % cube proxy(s) with USD Properties\n" created
 		)
 
-		on btn_dryHierarchy pressed do
-		(
-			local rawSelection = selection as array
-			if rawSelection.count == 0 then
-			(
-				messageBox "No objects selected."
-				return false
-			)
-
-			if rdo_mode.state != 2 then
-			(
-				messageBox "Dry hierarchy preview is available in Advanced mode only."
-				return false
-			)
-
-			local previewSets = if chk_advSingle.checked then
-				(buildAdvancedSingleExportSets rawSelection "" writeMetadata:false)
-			else
-				(buildAdvancedExportSets rawSelection "" writeMetadata:false)
-			previewSets = partitionCamerasToSingleExport previewSets cameraFileName:"Cameras"
-			printHierarchyPreview previewSets
-
-			if g_PowerUSD_lastDir == undefined do g_PowerUSD_lastDir = (getDir #export)
-			local outDir = getSavePath caption:"Select Output Directory for _hierarchy.txt" initialDir:g_PowerUSD_lastDir
-			if outDir != undefined then
-			(
-				g_PowerUSD_lastDir = outDir
-				writeHierarchyMetadata previewSets outDir
-			)
-		)
-
 		on btn_export_sets pressed do
 		(
 			if selectionSets.count == 0 then (messageBox "No Selection Sets found."; return false)
@@ -875,10 +323,11 @@ buttonText:"Clone PowerUSD UI"
 					append exportSets (ExportNodeData exportName:setName rootNodes:setNodes moveRoot:undefined subFolder:undefined parentName:undefined)
 			)
 			exportSets = partitionCamerasToSingleExport exportSets cameraFileName:"Cameras"
+			exportSets = bundleCameraTargetsInExportSets exportSets
 
 			local currentSel = selection as array
 			local exportSuccess = performBatchExport exportSets outDir false chk_thumbnail.checked spn_startFrame.value spn_endFrame.value spn_fps.value
-			
+
 			if exportSuccess do
 			(
 				select currentSel
@@ -887,7 +336,7 @@ buttonText:"Clone PowerUSD UI"
 					local assemblerPath = scriptsDir + "Clone_USD_StageAssembler.py"
 					if doesFileExist assemblerPath do
 					(
-						setAssemblerPythonVars outDir (if chk_rootPrim.checked then edt_defaultPrim.text else "") spn_startFrame.value spn_endFrame.value spn_fps.value
+						setAssemblerPythonVars outDir (if chk_rootPrim.checked then edt_defaultPrim.text else "") spn_startFrame.value spn_endFrame.value spn_fps.value inlineCameras:chk_inlineCameras.checked
 						python.ExecuteFile assemblerPath
 					)
 				)
@@ -1022,13 +471,14 @@ buttonText:"Clone PowerUSD UI"
 			)
 
 			exportSets = partitionCamerasToSingleExport exportSets cameraFileName:"Cameras"
+			exportSets = bundleCameraTargetsInExportSets exportSets
 			if shouldWriteHierarchyMeta and exportSets.count > 0 do writeHierarchyMetadata exportSets outDir
 
 			local currentSel = selection as array
 			-- Only apply move-to-origin in Simple mode
 			local useOrigin = (not isAdvancedMode) and chk_origin.checked
 			local exportSuccess = performBatchExport exportSets outDir useOrigin chk_thumbnail.checked spn_startFrame.value spn_endFrame.value spn_fps.value
-			
+
 			if exportSuccess do
 			(
 				select rawSelection
@@ -1037,7 +487,7 @@ buttonText:"Clone PowerUSD UI"
 					local assemblerPath = scriptsDir + "Clone_USD_StageAssembler.py"
 					if doesFileExist assemblerPath do
 					(
-						setAssemblerPythonVars outDir (if chk_rootPrim.checked then edt_defaultPrim.text else "") spn_startFrame.value spn_endFrame.value spn_fps.value
+						setAssemblerPythonVars outDir (if chk_rootPrim.checked then edt_defaultPrim.text else "") spn_startFrame.value spn_endFrame.value spn_fps.value inlineCameras:chk_inlineCameras.checked
 						python.ExecuteFile assemblerPath
 					)
 				)

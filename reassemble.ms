@@ -22,9 +22,11 @@ buttonText:"Clone PowerUSD Reassemble"
 		(
 			checkbox chk_rootPrim "Root Prim" checked:false tooltip:"Wrap everything under a root prim.\nUncheck to place assets at stage root."
 			edittext edt_defaultPrim "Default Prim:" text:"World" fieldWidth:180 enabled:false tooltip:"Top-level assembly prim name."
+			checkbox chk_inlineCameras "Inline Cameras" checked:true tooltip:"Write camera data directly into .usda stage.\nUncheck to use USD references for cameras."
 		)
 
 		label lbl_status "" align:#left
+		button btn_dryHierarchy "GENERATE _HIERARCHY" width:220 height:24 enabled:false tooltip:"Generate _hierarchy.txt from current scene selection.\nRequires objects to be selected."
 		button btn_assemble "REASSEMBLE STAGE" width:220 height:40 enabled:false
 
 		on rReassemble open do
@@ -55,6 +57,7 @@ buttonText:"Clone PowerUSD Reassemble"
 				if usdFiles.count == 0 then
 				(
 					lbl_status.text = "No USD files found."
+					btn_dryHierarchy.enabled = true
 					btn_assemble.enabled = false
 				)
 				else
@@ -63,9 +66,36 @@ buttonText:"Clone PowerUSD Reassemble"
 					if hasHierarchy then msg += " + hierarchy"
 					else msg += " (flat mode)"
 					lbl_status.text = msg
+					btn_dryHierarchy.enabled = true
 					btn_assemble.enabled = true
 				)
 			)
+		)
+
+		on btn_dryHierarchy pressed do
+		(
+			if edt_dir.text == "" do (messageBox "Select a directory first."; return false)
+
+			local rawSelection = selection as array
+			if rawSelection.count == 0 do (messageBox "Select objects in the scene first."; return false)
+
+			local scriptsDir = (getDir #userScripts) + "/CloneTools/"
+			local builderPath = scriptsDir + "Clone_USD_HierarchyBuilder.ms"
+			if not doesFileExist builderPath do
+			(
+				messageBox "Clone_USD_HierarchyBuilder.ms not found in CloneTools."
+				return false
+			)
+
+			fileIn builderPath
+
+			local exportSets = buildAdvancedExportSets rawSelection edt_dir.text writeMetadata:false
+			exportSets = bundleCameraTargetsInExportSets exportSets
+			writeHierarchyMetadata exportSets edt_dir.text
+			printHierarchyPreview exportSets
+
+			lbl_status.text = "_hierarchy.txt written (" + exportSets.count as string + " entries)"
+			messageBox ("_hierarchy.txt written with " + exportSets.count as string + " entries.") title:"PowerUSD"
 		)
 
 		on btn_assemble pressed do
@@ -105,6 +135,11 @@ buttonText:"Clone PowerUSD Reassemble"
 			python.Execute ("_powerusd_start_frame = " + (spn_startFrame.value as integer) as string)
 			python.Execute ("_powerusd_end_frame = " + (spn_endFrame.value as integer) as string)
 			python.Execute ("_powerusd_fps = " + (spn_fps.value as integer) as string)
+
+			if chk_inlineCameras.checked then
+				python.Execute "_powerusd_inline_cameras = True"
+			else
+				python.Execute "_powerusd_inline_cameras = False"
 
 			python.ExecuteFile assemblerPath
 
