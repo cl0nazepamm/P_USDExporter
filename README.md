@@ -1,42 +1,10 @@
-# PowerUSD for 3ds Max
+# Better USD exporter for 3dsMax (PowerUSD)
 
-Bulk USD exporter for 3ds Max built on top of MaxUSD. Handles hierarchy detection, instancing, variant sets, purpose switching, and automated stage assembly.
+USD export with auto stage assembly, variant sets, proxies and prim kind definitions.
 
-![PowerUSD UI](images/PowerUSD_rollout.png)
+## How does it work?
 
-## Requirements
-
-- 3ds Max 2026+
-- MaxUSD plugin (USD for Autodesk 3ds Max v0.13+)
-
-## Installation
-
-Copy the contents to your 3ds Max user scripts directory:
-
-```
-%localappdata%\Autodesk\3dsMax\2026 - 64bit\ENU\scripts\CloneTools\
-```
-
-Files to copy:
-- `powerusd.ms` - Main exporter macroscript
-- `Clone_USD_AttributeDef.ms` - USD Properties modifier definition
-- `chasers/Clone_USD_CleanStruct.py` - Material structure cleanup chaser
-- `chasers/Clone_USD_PropertiesChaser.py` - Properties and root stripping chaser
-- `chasers/Clone_USD_StageAssembler.py` - Stage assembly script
-- `chasers/Clone_USD_usdWrapper.py` - Simple mode mesh wrapper chaser
-
-Copy the `icons/` folder to:
-```
-%localappdata%\Autodesk\3dsMax\2026 - 64bit\ENU\usericons\PowerUSD\
-```
-
-The macroscript registers under **CloneTools** category. Assign it to a toolbar, menu, or shortcut.
-
-## MaxUSD Export Settings
-
-PowerUSD expects specific MaxUSD settings on the first export. The dialog only appears once per batch - subsequent files use the same settings.
-
-![Correct Settings](images/Correct_Settings.png)
+It exports everything to separate .USD file and assembles them. You can use auto assembly or assembly tool. Please open the example scene to understand how script works better!
 
 Key settings:
 - **Clean Material Structure**: CHECK (enables the chaser)

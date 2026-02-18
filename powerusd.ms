@@ -1,127 +1,244 @@
 -- Author: Clone.
+
+global g_CloneTools_ScriptsDir
+
+fn CloneTools_uniqueAppend arr value =
+(
+	if value == undefined or value == "" do return arr
+	local v = value as string
+	for e in arr where (toLower (e as string)) == (toLower v) do return arr
+	append arr v
+	arr
+)
+
+fn CloneTools_isWritableDir dirPath =
+(
+	if dirPath == undefined or dirPath == "" do return false
+	try (
+		makeDir dirPath
+		local probe = dirPath + "\\_clonetools_write_test.tmp"
+		local f = createFile probe
+		close f
+		deleteFile probe
+		true
+	) catch (false)
+)
+
+fn CloneTools_detectSourceDir selfFileName =
+(
+	local candidates = #()
+	if ::g_CloneTools_ScriptsDir != undefined and ::g_CloneTools_ScriptsDir != "" do
+		CloneTools_uniqueAppend candidates ::g_CloneTools_ScriptsDir
+
+	local pA = try(getSourceFileName())catch("")
+	if pA != undefined and pA != "" do CloneTools_uniqueAppend candidates (getFilenamePath pA)
+
+	local pB = try(sourceFileName)catch("")
+	if pB != undefined and pB != "" do CloneTools_uniqueAppend candidates (getFilenamePath pB)
+
+	local pC = try(sysInfo.currentdir)catch("")
+	if pC != undefined and pC != "" do CloneTools_uniqueAppend candidates pC
+
+	CloneTools_uniqueAppend candidates ((getDir #userScripts) + "\\CloneTools\\")
+
+	for dir in candidates do (
+		local direct = dir + selfFileName
+		local fromChasers = dir + "chasers\\" + selfFileName
+		if doesFileExist direct do return dir
+		if doesFileExist fromChasers do return (dir + "chasers\\")
+	)
+	undefined
+)
+
+fn CloneTools_findSourceFile sourceDir fileName =
+(
+	local p1 = sourceDir + fileName
+	if doesFileExist p1 do return p1
+	local p2 = sourceDir + "chasers\\" + fileName
+	if doesFileExist p2 do return p2
+	""
+)
+
+fn CloneTools_copyFile sourcePath destPath =
+(
+	if sourcePath == undefined or sourcePath == "" do return false
+	if destPath == undefined or destPath == "" do return false
+	if not doesFileExist sourcePath do return false
+
+	if (toLower sourcePath) == (toLower destPath) do return true
+	if doesFileExist destPath do deleteFile destPath
+	copyFile sourcePath destPath
+)
+
+fn CloneTools_installFiles selfFileName extraFiles:#() =
+(
+	local sourceDir = CloneTools_detectSourceDir selfFileName
+	if sourceDir == undefined or sourceDir == "" do return false
+
+	local targetDir = (getDir #userScripts) + "\\CloneTools\\"
+	try(makeDir targetDir)catch()
+
+	local files = #()
+	append files selfFileName
+	for f in extraFiles do append files f
+
+	local copiedSelf = false
+	for f in files do (
+		local src = CloneTools_findSourceFile sourceDir f
+		if src != "" then (
+			local dst = targetDir + f
+			if CloneTools_copyFile src dst and (toLower f) == (toLower selfFileName) do copiedSelf = true
+		)
+	)
+
+	if copiedSelf do ::g_CloneTools_ScriptsDir = targetDir
+	copiedSelf
+)
+
+fn CloneTools_collectMacroPaths selfFileName =
+(
+	local paths = #()
+	local sourceDir = CloneTools_detectSourceDir selfFileName
+	if sourceDir != undefined and sourceDir != "" do CloneTools_uniqueAppend paths (sourceDir + selfFileName)
+	CloneTools_uniqueAppend paths ((getDir #userScripts) + "\\CloneTools\\" + selfFileName)
+	paths
+)
+
+fn CloneTools_collectStartupDirs =
+(
+	local dirs = #()
+	local d1 = try(getDir #userStartupScripts)catch("")
+	if d1 != undefined and d1 != "" do CloneTools_uniqueAppend dirs d1
+	CloneTools_uniqueAppend dirs ((getDir #userScripts) + "\\startup")
+	local d2 = try(getDir #startupScripts)catch("")
+	if d2 != undefined and d2 != "" do CloneTools_uniqueAppend dirs d2
+	dirs
+)
+
+fn CloneTools_escapePath path = (substituteString path "\\" "\\\\")
+
+fn CloneTools_installUserMacroMirror selfFileName mirrorName =
+(
+	local sourceDir = CloneTools_detectSourceDir selfFileName
+	if sourceDir == undefined or sourceDir == "" do return false
+	local sourceFile = CloneTools_findSourceFile sourceDir selfFileName
+	if sourceFile == "" do return false
+
+	local userMacrosDir = getDir #userMacros
+	if userMacrosDir == undefined or userMacrosDir == "" do return false
+	if not CloneTools_isWritableDir userMacrosDir do return false
+
+	local mirrorPath = userMacrosDir + "\\" + mirrorName
+	if doesFileExist mirrorPath do deleteFile mirrorPath
+	CloneTools_copyFile sourceFile mirrorPath
+)
+
+fn PowerUSD_getScriptsDir =
+(
+	if ::g_CloneTools_ScriptsDir != undefined and ::g_CloneTools_ScriptsDir != "" then
+		::g_CloneTools_ScriptsDir
+	else
+		((getDir #userScripts) + "\\CloneTools\\")
+)
+
+fn PowerUSD_resolveToolPath fileName =
+(
+	local baseDir = PowerUSD_getScriptsDir()
+	local p1 = baseDir + fileName
+	if doesFileExist p1 do return p1
+
+	local p2 = baseDir + "chasers\\" + fileName
+	if doesFileExist p2 do return p2
+
+	undefined
+)
+
+fn PowerUSD_tryLoadMS fileName required:true =
+(
+	local p = PowerUSD_resolveToolPath fileName
+	if p == undefined then (
+		if required do messageBox ("Missing file:\n" + fileName + "\n\nLooked in:\n" + (PowerUSD_getScriptsDir()) + "\n" + (PowerUSD_getScriptsDir()) + "chasers\\") title:"PowerUSD Error"
+		return false
+	)
+
+	try (
+		fileIn p
+		true
+	) catch (
+		if required do messageBox ("Failed to load:\n" + p + "\n\n" + (getCurrentException() as string)) title:"PowerUSD Error"
+		false
+	)
+)
+
+fn PowerUSD_tryRunPy fileName =
+(
+	local p = PowerUSD_resolveToolPath fileName
+	if p != undefined do (
+		try(python.ExecuteFile p)catch(format "[PowerUSD] Failed python file: %\n" p)
+	)
+)
+
+fn PowerUSD_InstallStartupLoader =
+(
+	local selfFile = "powerusd.ms"
+	local deps = #(
+		"Clone_USD_HierarchyBuilder.ms",
+		"Clone_USD_CleanStruct.py",
+		"Clone_USD_usdWrapper.py",
+		"Clone_USD_PropertiesChaser.py",
+		"Clone_USD_StageAssembler.py",
+		"Clone_USD_AttributeDef.ms"
+	)
+	CloneTools_installFiles selfFile extraFiles:deps
+	CloneTools_installUserMacroMirror selfFile "PowerUSDExport_CloneTools.mcr"
+
+	local macroPaths = CloneTools_collectMacroPaths selfFile
+	local macroList = ""
+	for i = 1 to macroPaths.count do (
+		local comma = if i < macroPaths.count then "," else ""
+		macroList += ("\t\t\"" + (CloneTools_escapePath macroPaths[i]) + "\"" + comma + "\n")
+	)
+
+	local loaderScript =
+		"-- Auto-generated by PowerUSD\n" +
+		"(\n" +
+		"\tlocal macroPaths = #(\n" +
+		macroList +
+		"\t)\n" +
+		"\tfor p in macroPaths do (\n" +
+		"\t\tif doesFileExist p do (\n" +
+		"\t\t\tfileIn p quiet:true\n" +
+		"\t\t\texit\n" +
+		"\t\t)\n" +
+		"\t)\n" +
+		")\n"
+
+	local installCount = 0
+	for startupDir in CloneTools_collectStartupDirs() do (
+		if CloneTools_isWritableDir startupDir then (
+			local loaderPath = startupDir + "\\PowerUSD_LoadMacros.ms"
+			try (
+				local f = createFile loaderPath
+				format "%" loaderScript to:f
+				close f
+				installCount += 1
+				format "[PowerUSD] Startup loader installed: %\n" loaderPath
+			) catch ()
+		)
+	)
+
+	installCount > 0
+)
+
 macroScript PowerUSDExport
 category:"CloneTools"
-toolTip:"Batch Export Selected to USD with UI"
+toolTip:"Advanced USD Export with Hierarchy & Assembler"
 buttonText:"Clone PowerUSD UI"
 (
 	persistent global g_PowerUSD_lastDir
 
-	-- Load shared hierarchy builder (ExportNodeData, buildAdvancedExportSets, writeHierarchyMetadata, etc.)
-	fileIn ((getDir #userScripts) + "/CloneTools/Clone_USD_HierarchyBuilder.ms")
-
-	fn captureViewportThumb nodes filePath thumbSize:256 =
-	(
-		local oldRenderer = renderers.current
-		local oldBgColor = backgroundColor
-		local oldUseEnvMap = useEnvironmentMap
-
-		local nodeSet = for n in nodes collect n
-		local hiddenObjs = for o in objects where not o.isHidden and findItem nodeSet o == 0 collect o
-		hide hiddenObjs
-
-		select nodes
-		max zoomext sel
-
-		renderers.current = Quicksilver_Hardware_Renderer()
-		backgroundColor = color 0 0 0 0
-		useEnvironmentMap = false
-
-		local thumb = render outputSize:[thumbSize, thumbSize] vfb:off quiet:true
-
-		pngio.setAlpha true
-		thumb.filename = filePath
-		save thumb
-		close thumb
-
-		renderers.current = oldRenderer
-		backgroundColor = oldBgColor
-		useEnvironmentMap = oldUseEnvMap
-
-		unhide hiddenObjs
-		return true
-	)
-
-	fn performBatchExport exportSets outDir useOrigin useThumbnails startFrame endFrame fps =
-	(
-		if exportSets.count > 0 then
-		(
-			local abortBatch = false
-
-			undo "Batch USD Export" on
-			(
-				with redraw off
-				(
-					for i = 1 to exportSets.count do
-					(
-						if not abortBatch do
-						(
-							local item = exportSets[i]
-							if item.rootNodes == undefined or item.rootNodes.count == 0 then
-							(
-								format "Skipping metadata-only set '%'\n" item.exportName
-								continue
-							)
-
-							local exportDir = outDir
-							if item.subFolder != undefined and item.subFolder != "" then
-							(
-								exportDir = outDir + "\\" + item.subFolder
-								makeDir exportDir all:true
-							)
-
-							local filePath = exportDir + "\\" + item.exportName + ".usd"
-							local thumbPath = exportDir + "\\" + item.exportName + "_thumb.png"
-							local originalPos = [0, 0, 0]
-							local moved = false
-
-							select item.rootNodes
-
-							try
-							(
-								if useOrigin and item.moveRoot != undefined then
-								(
-									originalPos = item.moveRoot.pos
-									item.moveRoot.pos = [0, 0, 0]
-									moved = true
-								)
-
-								local result = false
-
-								if i == 1 then
-								(
-									result = exportFile filePath selectedOnly:true
-									if result == false do abortBatch = true
-								)
-								else
-								(
-									result = exportFile filePath #noPrompt selectedOnly:true
-								)
-
-								if useThumbnails and result != false do
-								(
-									local lowerName = toLower item.exportName
-									local skipThumb = (matchPattern lowerName pattern:"*_proxy*") or (matchPattern lowerName pattern:"*_guide*")
-									if not skipThumb do
-										captureViewportThumb item.rootNodes thumbPath
-								)
-							)
-							catch
-							(
-								format "Error exporting '%': %\n" item.exportName (getCurrentException())
-							)
-							finally
-							(
-								if moved do item.moveRoot.pos = originalPos
-							)
-						)
-					)
-				)
-			)
-
-			return (not abortBatch)
-		)
-		return false
-	)
+	-- Load shared hierarchy builder (ExportNodeData, buildAdvancedExportSets, performBatchExport, etc.)
+	if not PowerUSD_tryLoadMS "Clone_USD_HierarchyBuilder.ms" do return false
 
 	fn setAssemblerPythonVars outDir defaultPrimName startFrame endFrame fps inlineCameras:true =
 	(
@@ -154,36 +271,16 @@ buttonText:"Clone PowerUSD UI"
 	(
 		bitmap bmp_logo "Logo" fileName:"" height:50 width:240 align:#center
 
-		group "Time Range"
-		(
-			spinner spn_startFrame "Start:" range:[-10000, 10000, 0] type:#integer fieldWidth:50 across:2
-			spinner spn_endFrame "End:" range:[-10000, 10000, 100] type:#integer fieldWidth:50
-			spinner spn_fps "FPS:" range:[1, 120, 24] type:#integer fieldWidth:50
-		)
-
 		group "Export Mode"
 		(
-			radiobuttons rdo_mode labels:#("Simple", "Advanced") columns:2 default:1 \
-				tooltip:"Simple: Export hierarchies as-is, move to origin option.\nAdvanced: P_USDparamobj hierarchy detection, variants, purposes."
-			checkbox chk_advSingle "Single Export (Advanced)" checked:false \
-				tooltip:"Advanced only. Exports only selected Advanced units for incremental updates."
-			label lbl_modeInfo "" align:#left
-		)
-
-		group "Grouping (Simple Mode)"
-		(
-			checkbox chk_layers "By Layers" checked:false tooltip:"One USD file per Layer."
-			checkbox chk_hierarchy "By Hierarchies" checked:true tooltip:"One USD file per Hierarchy Root."
-		)
-
-		group "Transform (Simple Mode)"
-		(
-			checkbox chk_origin "Move to Origin" checked:false tooltip:"Temporarily moves root to 0,0,0 for export."
+			checkbox chk_advSingle "Single Export" checked:false \
+				tooltip:"Exports only selected Advanced units for incremental updates.\nHierarchy metadata is not rewritten."
 		)
 
 		group "Options"
 		(
 			checkbox chk_thumbnail "Generate Thumbnails" checked:false
+			checkbox chk_layerFolders "Organize by Layer" checked:true tooltip:"Mirror layer hierarchy into subfolders.\nUncheck to export all files flat into the output folder."
 		)
 
 		group "Assembler"
@@ -191,74 +288,36 @@ buttonText:"Clone PowerUSD UI"
 			checkbox chk_autoAssemble "Auto Assemble Stage" checked:true tooltip:"Create .usda stage referencing all exports.\nRebuilds hierarchy from metadata."
 			checkbox chk_rootPrim "Root Prim" checked:false tooltip:"Wrap everything under a root prim.\nUncheck to place assets at stage root."
 			edittext edt_defaultPrim "Default Prim:" text:"World" fieldWidth:140 tooltip:"Top-level assembly prim name (e.g. World)."
-			checkbox chk_inlineCameras "Inline Cameras" checked:true tooltip:"Write camera data directly into .usda stage.\nUncheck to use USD references for cameras."
+			checkbox chk_inlineCameras "Inline Cameras" checked:false tooltip:"Write camera data directly into .usda stage.\nUncheck to use USD references for cameras."
 		)
 
 		button btn_export "EXPORT SELECTED" width:220 height:40 highlightColor:(color 0 200 0)
 		button btn_export_sets "EXPORT SELECTION SETS" width:220 height:30
-		button btn_addUSDProps "Add USD Properties" width:220 height:24 tooltip:"Add USD Attribute Holder to selected objects (P_USDparamobj)."
 		button btn_genProxy "Generate Cube Proxies" width:220 height:24 tooltip:"Create bounding box proxies for selected _RENDER objects."
 
-		fn updateModeUI =
+		on chk_advSingle changed state do
 		(
-			local isSimple = (rdo_mode.state == 1)
-			chk_layers.enabled = isSimple
-			chk_hierarchy.enabled = isSimple
-			chk_origin.enabled = isSimple
-			chk_advSingle.enabled = (not isSimple)
-			if isSimple do chk_advSingle.checked = false
-
-			if isSimple then
-				lbl_modeInfo.text = "Exports hierarchies as-is."
-			else
-				lbl_modeInfo.text = "P_USDparamobj -> separate USD files (optional single export)."
+			chk_autoAssemble.enabled = not state
+			chk_rootPrim.enabled = not state
+			edt_defaultPrim.enabled = (not state) and chk_rootPrim.checked
+			chk_inlineCameras.enabled = not state
 		)
-
-		on rdo_mode changed state do updateModeUI()
-
-		on chk_layers changed state do
-			if state do chk_hierarchy.checked = false
-
-		on chk_hierarchy changed state do
-			if state do chk_layers.checked = false
 
 		on chk_rootPrim changed state do
 			edt_defaultPrim.enabled = state
 
 		on rPowerUSD open do
 		(
-			spn_startFrame.value = animationRange.start.frame as integer
-			spn_endFrame.value = animationRange.end.frame as integer
-			spn_fps.value = frameRate as integer
-
 			local iconsDir = GetDir #userIcons
 			local logoPath = iconsDir + "\\PowerUSD\\powerusd_logo.png"
 			if doesFileExist logoPath do bmp_logo.fileName = logoPath
-
-			updateModeUI()
-		)
-
-		on btn_addUSDProps pressed do
-		(
-			local attrDefPath = (getDir #userScripts) + "/CloneTools/Clone_USD_AttributeDef.ms"
-			if doesFileExist attrDefPath then
-			(
-				fileIn attrDefPath
-				if selection.count > 0 then
-				(
-					for obj in selection do addUSDProperties obj
-					format "Added USD Properties to % object(s)\n" selection.count
-				)
-				else messageBox "No objects selected."
-			)
-			else messageBox "Clone_USD_AttributeDef.ms not found."
 		)
 
 		on btn_genProxy pressed do
 		(
 			if selection.count == 0 then (messageBox "No objects selected."; return false)
 
-			local attrDefPath = (getDir #userScripts) + "/CloneTools/Clone_USD_AttributeDef.ms"
+			local attrDefPath = PowerUSD_getScriptsDir() + "Clone_USD_AttributeDef.ms"
 			if doesFileExist attrDefPath do fileIn attrDefPath
 
 			local created = 0
@@ -309,10 +368,9 @@ buttonText:"Clone PowerUSD UI"
 			if outDir == undefined do return false
 			g_PowerUSD_lastDir = outDir
 
-			local scriptsDir = (getDir #userScripts) + "/CloneTools/"
-			if doesFileExist (scriptsDir + "Clone_USD_CleanStruct.py") do python.ExecuteFile (scriptsDir + "Clone_USD_CleanStruct.py")
-			if doesFileExist (scriptsDir + "Clone_USD_usdWrapper.py") do python.ExecuteFile (scriptsDir + "Clone_USD_usdWrapper.py")
-			if doesFileExist (scriptsDir + "Clone_USD_PropertiesChaser.py") do python.ExecuteFile (scriptsDir + "Clone_USD_PropertiesChaser.py")
+			PowerUSD_tryRunPy "Clone_USD_CleanStruct.py"
+			PowerUSD_tryRunPy "Clone_USD_usdWrapper.py"
+			PowerUSD_tryRunPy "Clone_USD_PropertiesChaser.py"
 
 			local exportSets = #()
 			for i = 1 to selectionSets.count do
@@ -325,18 +383,25 @@ buttonText:"Clone PowerUSD UI"
 			exportSets = partitionCamerasToSingleExport exportSets cameraFileName:"Cameras"
 			exportSets = bundleCameraTargetsInExportSets exportSets
 
+			if not chk_layerFolders.checked do
+				for es in exportSets do es.subFolder = undefined
+
 			local currentSel = selection as array
-			local exportSuccess = performBatchExport exportSets outDir false chk_thumbnail.checked spn_startFrame.value spn_endFrame.value spn_fps.value
+			local startF = animationRange.start.frame as integer
+			local endF = animationRange.end.frame as integer
+			local fps = frameRate as integer
+			local exportSuccess = performBatchExport exportSets outDir false chk_thumbnail.checked startF endF fps
 
 			if exportSuccess do
 			(
 				select currentSel
+				writeCameraSequence outDir
 				if chk_autoAssemble.checked do
 				(
-					local assemblerPath = scriptsDir + "Clone_USD_StageAssembler.py"
-					if doesFileExist assemblerPath do
+					local assemblerPath = PowerUSD_resolveToolPath "Clone_USD_StageAssembler.py"
+					if assemblerPath != undefined do
 					(
-						setAssemblerPythonVars outDir (if chk_rootPrim.checked then edt_defaultPrim.text else "") spn_startFrame.value spn_endFrame.value spn_fps.value inlineCameras:chk_inlineCameras.checked
+						setAssemblerPythonVars outDir (if chk_rootPrim.checked then edt_defaultPrim.text else "") startF endF fps inlineCameras:chk_inlineCameras.checked
 						python.ExecuteFile assemblerPath
 					)
 				)
@@ -353,141 +418,48 @@ buttonText:"Clone PowerUSD UI"
 			if outDir == undefined do return false
 			g_PowerUSD_lastDir = outDir
 
-			local scriptsDir = (getDir #userScripts) + "/CloneTools/"
-			if doesFileExist (scriptsDir + "Clone_USD_CleanStruct.py") do python.ExecuteFile (scriptsDir + "Clone_USD_CleanStruct.py")
-			if doesFileExist (scriptsDir + "Clone_USD_usdWrapper.py") do python.ExecuteFile (scriptsDir + "Clone_USD_usdWrapper.py")
-			if doesFileExist (scriptsDir + "Clone_USD_PropertiesChaser.py") do python.ExecuteFile (scriptsDir + "Clone_USD_PropertiesChaser.py")
+			PowerUSD_tryRunPy "Clone_USD_CleanStruct.py"
+			PowerUSD_tryRunPy "Clone_USD_usdWrapper.py"
+			PowerUSD_tryRunPy "Clone_USD_PropertiesChaser.py"
 
 			local exportSets = #()
-			local isAdvancedMode = (rdo_mode.state == 2)
 			local shouldWriteHierarchyMeta = false
 
-			-- MODE: Advanced (P_USDparamobj -> separate files, hierarchy from metadata)
-			if isAdvancedMode then
+			if chk_advSingle.checked then
 			(
-				if chk_advSingle.checked then
-				(
-					format "Advanced single export: hierarchy metadata file is not rewritten.\n"
-					exportSets = buildAdvancedSingleExportSets rawSelection outDir writeMetadata:false
-				)
-				else
-				(
-					exportSets = buildAdvancedExportSets rawSelection outDir writeMetadata:false
-					shouldWriteHierarchyMeta = true
-				)
+				format "Advanced single export: hierarchy metadata file is not rewritten.\n"
+				exportSets = buildAdvancedSingleExportSets rawSelection outDir writeMetadata:false
 			)
-			-- SIMPLE MODE: Layers (all objects on layer exported together, MaxUSD handles instancing)
-			else if chk_layers.checked then
-			(
-				local layerNames = #()
-
-				for obj in rawSelection do
-				(
-					local lName = obj.layer.name
-					if findItem layerNames lName == 0 do append layerNames lName
-				)
-
-				for lName in layerNames do
-				(
-					local layer = LayerManager.getLayerFromName lName
-					local layerNodes = #()
-					layer.nodes &layerNodes
-
-					-- Export all layer nodes together - MaxUSD handles instancing automatically
-					format "  Layer '%': % objects\n" lName layerNodes.count
-					append exportSets (ExportNodeData exportName:lName rootNodes:layerNodes moveRoot:undefined subFolder:undefined parentName:undefined)
-				)
-			)
-			-- SIMPLE MODE: Hierarchies (entire hierarchy exported together, MaxUSD handles instancing)
-			else if chk_hierarchy.checked then
-			(
-				local processedRoots = #()
-
-				for obj in rawSelection do
-				(
-					local root = getHierarchyRoot obj
-					if findItem processedRoots root == 0 do
-					(
-						append processedRoots root
-						local fullTree = getAllDescendants root
-
-						-- Export entire hierarchy together - MaxUSD handles instancing automatically
-						format "  Hierarchy '%': % objects\n" root.name fullTree.count
-						append exportSets (ExportNodeData exportName:root.name rootNodes:fullTree moveRoot:root subFolder:undefined parentName:undefined)
-					)
-				)
-			)
-			-- SIMPLE MODE: Standard (individual objects/groups, instances exported together)
 			else
 			(
-				local groupsProcessed = #()
-				local geometryObjects = #()
-				local groupObjects = #()
-
-				-- Separate groups from geometry
-				for obj in rawSelection do
-				(
-					if isGroupMember obj then
-					(
-						local grpHead = obj
-						while (isGroupMember grpHead) do grpHead = grpHead.parent
-						if findItem groupsProcessed grpHead == 0 do
-						(
-							append groupsProcessed grpHead
-							append groupObjects grpHead
-						)
-					)
-					else if isGroupHead obj then
-					(
-						if findItem groupsProcessed obj == 0 do
-						(
-							append groupsProcessed obj
-							append groupObjects obj
-						)
-					)
-					else
-					(
-						append geometryObjects obj
-					)
-				)
-
-				-- Add group exports
-				for grp in groupObjects do
-					append exportSets (ExportNodeData exportName:grp.name rootNodes:#(grp) moveRoot:grp subFolder:undefined parentName:undefined)
-
-				-- Instance detection: group by baseObject, export ALL instances together
-				local instanceGroups = groupByInstances geometryObjects
-				format "Instance detection: found % unique base objects from % geometry objects\n" instanceGroups.count geometryObjects.count
-
-				for group in instanceGroups do
-				(
-					local master = selectMasterInstance group
-					-- Export ALL instances together - MaxUSD handles instancing automatically
-					if group.count > 1 then
-						format "  Instance group '%': % instances -> exporting together\n" master.name group.count
-
-					append exportSets (ExportNodeData exportName:master.name rootNodes:group moveRoot:master subFolder:undefined parentName:undefined)
-				)
+				exportSets = buildAdvancedExportSets rawSelection outDir writeMetadata:false
+				shouldWriteHierarchyMeta = true
 			)
 
 			exportSets = partitionCamerasToSingleExport exportSets cameraFileName:"Cameras"
 			exportSets = bundleCameraTargetsInExportSets exportSets
+
+			if not chk_layerFolders.checked do
+				for es in exportSets do es.subFolder = undefined
+
 			if shouldWriteHierarchyMeta and exportSets.count > 0 do writeHierarchyMetadata exportSets outDir
 
 			local currentSel = selection as array
-			-- Only apply move-to-origin in Simple mode
-			local useOrigin = (not isAdvancedMode) and chk_origin.checked
-			local exportSuccess = performBatchExport exportSets outDir useOrigin chk_thumbnail.checked spn_startFrame.value spn_endFrame.value spn_fps.value
+			local startF = animationRange.start.frame as integer
+			local endF = animationRange.end.frame as integer
+			local fps = frameRate as integer
+			local exportSuccess = performBatchExport exportSets outDir false chk_thumbnail.checked startF endF fps
 
 			if exportSuccess do
 			(
 				select rawSelection
-				if chk_autoAssemble.checked do
+				writeCameraSequence outDir
+				if chk_autoAssemble.checked and not chk_advSingle.checked do
 				(
-					local assemblerPath = scriptsDir + "Clone_USD_StageAssembler.py"
-					if doesFileExist assemblerPath do
+					local assemblerPath = PowerUSD_resolveToolPath "Clone_USD_StageAssembler.py"
+					if assemblerPath != undefined do
 					(
-						setAssemblerPythonVars outDir (if chk_rootPrim.checked then edt_defaultPrim.text else "") spn_startFrame.value spn_endFrame.value spn_fps.value inlineCameras:chk_inlineCameras.checked
+						setAssemblerPythonVars outDir (if chk_rootPrim.checked then edt_defaultPrim.text else "") startF endF fps inlineCameras:chk_inlineCameras.checked
 						python.ExecuteFile assemblerPath
 					)
 				)
@@ -498,3 +470,12 @@ buttonText:"Clone PowerUSD UI"
 
 	createDialog rPowerUSD
 )
+
+-- Capture our own directory so the macroscript can locate sibling scripts at runtime.
+(
+	local selfPath = getSourceFileName()
+	if selfPath != undefined and selfPath != "" do
+		g_CloneTools_ScriptsDir = getFilenamePath selfPath
+)
+
+PowerUSD_InstallStartupLoader()
