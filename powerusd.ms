@@ -43,9 +43,9 @@ fn CloneTools_detectSourceDir selfFileName =
 
 	for dir in candidates do (
 		local direct = dir + selfFileName
-		local fromChasers = dir + "chasers\\" + selfFileName
+		local fromChasers = dir + "cloneTools\\" + selfFileName
 		if doesFileExist direct do return dir
-		if doesFileExist fromChasers do return (dir + "chasers\\")
+		if doesFileExist fromChasers do return (dir + "cloneTools\\")
 	)
 	undefined
 )
@@ -54,7 +54,7 @@ fn CloneTools_findSourceFile sourceDir fileName =
 (
 	local p1 = sourceDir + fileName
 	if doesFileExist p1 do return p1
-	local p2 = sourceDir + "chasers\\" + fileName
+	local p2 = sourceDir + "cloneTools\\" + fileName
 	if doesFileExist p2 do return p2
 	""
 )
@@ -147,7 +147,7 @@ fn PowerUSD_resolveToolPath fileName =
 	local p1 = baseDir + fileName
 	if doesFileExist p1 do return p1
 
-	local p2 = baseDir + "chasers\\" + fileName
+	local p2 = baseDir + "cloneTools\\" + fileName
 	if doesFileExist p2 do return p2
 
 	undefined
@@ -157,7 +157,7 @@ fn PowerUSD_tryLoadMS fileName required:true =
 (
 	local p = PowerUSD_resolveToolPath fileName
 	if p == undefined then (
-		if required do messageBox ("Missing file:\n" + fileName + "\n\nLooked in:\n" + (PowerUSD_getScriptsDir()) + "\n" + (PowerUSD_getScriptsDir()) + "chasers\\") title:"PowerUSD Error"
+		if required do messageBox ("Missing file:\n" + fileName + "\n\nLooked in:\n" + (PowerUSD_getScriptsDir()) + "\n" + (PowerUSD_getScriptsDir()) + "cloneTools\\") title:"PowerUSD Error"
 		return false
 	)
 
@@ -222,7 +222,6 @@ fn PowerUSD_InstallStartupLoader =
 				format "%" loaderScript to:f
 				close f
 				installCount += 1
-				format "[PowerUSD] Startup loader installed: %\n" loaderPath
 			) catch ()
 		)
 	)
@@ -236,9 +235,6 @@ toolTip:"Advanced USD Export with Hierarchy & Assembler"
 buttonText:"Clone PowerUSD UI"
 (
 	persistent global g_PowerUSD_lastDir
-
-	-- Load shared hierarchy builder (ExportNodeData, buildAdvancedExportSets, performBatchExport, etc.)
-	if not PowerUSD_tryLoadMS "Clone_USD_HierarchyBuilder.ms" do return false
 
 	fn setAssemblerPythonVars outDir defaultPrimName startFrame endFrame fps inlineCameras:true =
 	(
@@ -280,7 +276,8 @@ buttonText:"Clone PowerUSD UI"
 		group "Options"
 		(
 			checkbox chk_thumbnail "Generate Thumbnails" checked:false
-			checkbox chk_layerFolders "Organize by Layer" checked:true tooltip:"Mirror layer hierarchy into subfolders.\nUncheck to export all files flat into the output folder."
+			checkbox chk_hierFolders "Organize by Hierarchy" checked:true tooltip:"Mirror scene hierarchy (helper names) into subfolders."
+			checkbox chk_layerFolders "Organize by Layer" checked:false tooltip:"Mirror layer hierarchy into subfolders."
 		)
 
 		group "Assembler"
@@ -305,6 +302,12 @@ buttonText:"Clone PowerUSD UI"
 
 		on chk_rootPrim changed state do
 			edt_defaultPrim.enabled = state
+
+		on chk_hierFolders changed state do
+			if state do chk_layerFolders.checked = false
+
+		on chk_layerFolders changed state do
+			if state do chk_hierFolders.checked = false
 
 		on rPowerUSD open do
 		(
@@ -350,7 +353,7 @@ buttonText:"Clone PowerUSD UI"
 
 					if obj.parent != undefined do proxyBox.parent = obj.parent
 
-					addUSDProperties proxyBox
+					::addUSDProperties proxyBox
 
 					created += 1
 				)
@@ -361,6 +364,7 @@ buttonText:"Clone PowerUSD UI"
 
 		on btn_export_sets pressed do
 		(
+			if not PowerUSD_tryLoadMS "Clone_USD_HierarchyBuilder.ms" do return false
 			if selectionSets.count == 0 then (messageBox "No Selection Sets found."; return false)
 
 			if g_PowerUSD_lastDir == undefined do g_PowerUSD_lastDir = (getDir #export)
@@ -378,24 +382,24 @@ buttonText:"Clone PowerUSD UI"
 				local setName = getNamedSelSetName i
 				local setNodes = for obj in selectionSets[i] collect obj
 				if setNodes.count > 0 do
-					append exportSets (ExportNodeData exportName:setName rootNodes:setNodes moveRoot:undefined subFolder:undefined parentName:undefined)
+					append exportSets (::ExportNodeData exportName:setName rootNodes:setNodes moveRoot:undefined subFolder:undefined parentName:undefined)
 			)
-			exportSets = partitionCamerasToSingleExport exportSets cameraFileName:"Cameras"
-			exportSets = bundleCameraTargetsInExportSets exportSets
+			exportSets = ::partitionCamerasToSingleExport exportSets cameraFileName:"Cameras"
+			exportSets = ::bundleCameraTargetsInExportSets exportSets
 
-			if not chk_layerFolders.checked do
+			if not chk_hierFolders.checked and not chk_layerFolders.checked do
 				for es in exportSets do es.subFolder = undefined
 
 			local currentSel = selection as array
 			local startF = animationRange.start.frame as integer
 			local endF = animationRange.end.frame as integer
 			local fps = frameRate as integer
-			local exportSuccess = performBatchExport exportSets outDir false chk_thumbnail.checked startF endF fps
+			local exportSuccess = ::performBatchExport exportSets outDir false chk_thumbnail.checked startF endF fps
 
 			if exportSuccess do
 			(
 				select currentSel
-				writeCameraSequence outDir
+				::writeCameraSequence outDir
 				if chk_autoAssemble.checked do
 				(
 					local assemblerPath = PowerUSD_resolveToolPath "Clone_USD_StageAssembler.py"
@@ -410,6 +414,7 @@ buttonText:"Clone PowerUSD UI"
 
 		on btn_export pressed do
 		(
+			if not PowerUSD_tryLoadMS "Clone_USD_HierarchyBuilder.ms" do return false
 			local rawSelection = selection as array
 			if rawSelection.count == 0 then (messageBox "No objects selected."; return false)
 
@@ -425,35 +430,36 @@ buttonText:"Clone PowerUSD UI"
 			local exportSets = #()
 			local shouldWriteHierarchyMeta = false
 
+			local useLayers = chk_layerFolders.checked
+
 			if chk_advSingle.checked then
 			(
-				format "Advanced single export: hierarchy metadata file is not rewritten.\n"
-				exportSets = buildAdvancedSingleExportSets rawSelection outDir writeMetadata:false
+				exportSets = ::buildAdvancedSingleExportSets rawSelection outDir writeMetadata:false useLayers:useLayers
 			)
 			else
 			(
-				exportSets = buildAdvancedExportSets rawSelection outDir writeMetadata:false
+				exportSets = ::buildAdvancedExportSets rawSelection outDir writeMetadata:false useLayers:useLayers
 				shouldWriteHierarchyMeta = true
 			)
 
-			exportSets = partitionCamerasToSingleExport exportSets cameraFileName:"Cameras"
-			exportSets = bundleCameraTargetsInExportSets exportSets
+			exportSets = ::partitionCamerasToSingleExport exportSets cameraFileName:"Cameras"
+			exportSets = ::bundleCameraTargetsInExportSets exportSets
 
-			if not chk_layerFolders.checked do
+			if not chk_hierFolders.checked and not chk_layerFolders.checked do
 				for es in exportSets do es.subFolder = undefined
 
-			if shouldWriteHierarchyMeta and exportSets.count > 0 do writeHierarchyMetadata exportSets outDir
+			if shouldWriteHierarchyMeta and exportSets.count > 0 do ::writeHierarchyMetadata exportSets outDir
 
 			local currentSel = selection as array
 			local startF = animationRange.start.frame as integer
 			local endF = animationRange.end.frame as integer
 			local fps = frameRate as integer
-			local exportSuccess = performBatchExport exportSets outDir false chk_thumbnail.checked startF endF fps
+			local exportSuccess = ::performBatchExport exportSets outDir false chk_thumbnail.checked startF endF fps
 
 			if exportSuccess do
 			(
 				select rawSelection
-				writeCameraSequence outDir
+				::writeCameraSequence outDir
 				if chk_autoAssemble.checked and not chk_advSingle.checked do
 				(
 					local assemblerPath = PowerUSD_resolveToolPath "Clone_USD_StageAssembler.py"
@@ -471,7 +477,6 @@ buttonText:"Clone PowerUSD UI"
 	createDialog rPowerUSD
 )
 
--- Capture our own directory so the macroscript can locate sibling scripts at runtime.
 (
 	local selfPath = getSourceFileName()
 	if selfPath != undefined and selfPath != "" do

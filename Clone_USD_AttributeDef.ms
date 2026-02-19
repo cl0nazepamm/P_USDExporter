@@ -14,6 +14,28 @@
 --
 -- Usage: Select objects, run addUSDProperties() or use PowerUSD UI button
 
+global USDPropertiesCA
+global addUSDProperties
+global removeUSDProperties
+global getUSDGeomType
+global getUSDKind
+global getUSDPurpose
+global getUSDInstanceable
+global getUSDHidden
+global getUSDActive
+global getUSDAssetVersion
+global getUSDDrawMode
+global getUSDPayload
+global setUSDGeomType
+global setUSDKind
+global setUSDPurpose
+global setUSDInstanceable
+global setUSDHidden
+global setUSDActive
+global setUSDAssetVersion
+global setUSDPayload
+global setUSDDrawMode
+
 -- Define the custom attributes block
 USDPropertiesCA = attributes "USDProperties"
 (
@@ -328,7 +350,3 @@ fn setUSDDrawMode obj modeStr =
 	return false
 )
 
-format "Clone USD Attribute Definition loaded.\n"
-format "Functions: addUSDProperties, removeUSDProperties\n"
-format "Getters: getUSDGeomType, getUSDKind, getUSDPurpose, getUSDInstanceable, getUSDHidden, getUSDActive, getUSDAssetVersion, getUSDDrawMode, getUSDPayload\n"
-format "Setters: setUSDGeomType, setUSDKind, setUSDPurpose, setUSDInstanceable, setUSDHidden, setUSDActive, setUSDAssetVersion, setUSDDrawMode, setUSDPayload\n"
