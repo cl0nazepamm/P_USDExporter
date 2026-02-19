@@ -1,4 +1,5 @@
 # Better USD exporter for 3dsMax (PowerUSD)
+Version: 0.50
 
 USD export with auto stage assembly, variant sets, proxies and prim kind definitions.
 
