@@ -1,41 +1,16 @@
 # Better USD exporter for 3dsMax (PowerUSD)
-Version: 0.50
+
+![PowerUSD Logo](icons/powerusd_logo.png)
 
 USD export with auto stage assembly, variant sets, proxies and prim kind definitions.
-
 ## How does it work?
 
-It exports everything to separate .USD file and assembles them. You can use auto assembly or assembly tool. Please open the example scene to understand how script works better!
+It exports everything to separate .USD file and assembles them. You can use auto-assembly or assembly tool. Please open the example scene to understand how script works better!
 
-Key settings:
-- **Clean Material Structure**: CHECK (enables the chaser)
-- **Bake Offset Transform**: UNCHECK
-- **Export Materials / USD Preview Surface**: CHECK
-- **Material Scope**: `mtl`
+Dummy objects with USD properties modifier (can be found in Customize panel) can be used to define prim kinds and more. You can assign this modifier to objects in the scene aswell but there is not much point to it. Groups get converted to dummies due to how horrible 3dsmax group objects are. 
 
-## Export Modes
+This script tries to be modular as possible! So you don't need to export the whole scene to update over and over again. It comes with single export that doesn't generate hirearchy json.
 
-### Simple Mode
-
-Exports each hierarchy root or layer group as a separate USD file. No sub-hierarchy splitting.
-
-- **By Layers** - One USD file per layer
-- **By Hierarchies** - One USD file per hierarchy root (default)
-- **Move to Origin** - Temporarily moves root to `[0,0,0]` for export
-
-### Advanced Mode
-
-Detects objects with **USD Properties** modifiers (P_USDparamobj) and splits hierarchies at those boundaries. The assembler then rebuilds the hierarchy as a composed USD stage.
-
-Rules:
-- Objects under a DummyObject export as one unit
-- Native Max groups export as one unit
-- Instances within a hierarchy are handled by MaxUSD automatically
-- A P_USDparamobj **breaks** the hierarchy - it and everything under it (until the next P_USDparamobj) export as a separate file
-
-## USD Properties Modifier
-
-Click **Add USD Properties** in the UI to add the modifier to selected objects. Available properties:
 
 | Property | Values | Description |
 |----------|--------|-------------|
@@ -49,6 +24,9 @@ Click **Add USD Properties** in the UI to add the modifier to selected objects. 
 | Draw Mode | default, bounds, origin, cards | Viewport draw mode |
 | Payload | true/false | Use payload instead of reference |
 
+
+Filename suffixes are used for defining variants and proxies.
+
 ## Filename Suffixes
 
 Object names control assembly behavior through suffixes:
@@ -61,44 +39,23 @@ Object names control assembly behavior through suffixes:
 | `_GUIDE` | Sets `purpose = guide` |
 | `_PAYLOAD` | Referenced as payload instead of reference |
 
-Suffixes can be combined: `Chair_RENDER_VARIANT1`
+### Difference from standard USD export.
 
-## Stage Assembly
-
-Enable **Auto Assemble Stage** to generate a `.usda` file that references all exported USDs with correct hierarchy, kind, purpose, variants, and payloads.
-
-The assembler reads `_hierarchy.txt` metadata written during export and reconstructs the scene structure. Set **Default Prim** to name the top-level assembly prim (default: `World`).
-
-## Chasers
-
-### Clean Material Structure
-Fixes MaxUSD material export structure. Do not disable.
-
-### Properties Chaser
-Post-export processing that:
 - Reads USD Properties from Max Attribute Holders and writes them to USD prims
 - Strips the `/root` wrapper that MaxUSD adds
-- Remaps material binding paths after restructuring
+- Remaps material binding paths aftwhatr restructuring
 - Handles variant set creation from `_VARIANT*` children
 - Nests `/mtl` scope under the content prim for clean referencing
 
-### USD Wrapper (Simple Mode)
-Wraps exported meshes under a new Xform and sets kind to `subcomponent`. Used in simple mode only.
-
-| Wrapper Off | Wrapper On |
-|-------------|------------|
-| ![off](images/wrapper_off.png) | ![on](images/wrapper_on.png) |
-
 ## Material Structure Cleanup
 
-The Clean Material Structure chaser fixes MaxUSD's default material export to produce cleaner USD Preview Surface shaders.
+The Clean Material Structure fixes MaxUSD's default material export to produce cleaner USD Preview Surface shaders.
 
 | Clean Off | Clean On |
 |-----------|----------|
 | ![off](images/clean_off.png) | ![on](images/clean_on.png) |
 | ![off2](images/clean_off2.png) | ![on2](images/clean_on2.png) |
 
-## Additional Scripts
+## License
 
-- `additional/promote_stage_To_Max.py` - Import assembled stage back into Max
-- `additional/usdPreview_TO_RS.py` - Convert USD Preview Surface materials to Redshift
+MIT
