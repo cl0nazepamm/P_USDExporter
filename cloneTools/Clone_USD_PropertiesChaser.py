@@ -64,14 +64,21 @@ class USDPropertiesChaser(maxUsd.ExportChaser):
             print(f"  ERROR applying properties: {e}")
             print(traceback.format_exc())
 
-        # Step 2: Strip /root wrapper and remap paths
+        # Step 2: Apply purpose from name suffixes (_RENDER, _PROXY, _GUIDE)
+        try:
+            self._apply_suffix_purpose()
+        except Exception as e:
+            print(f"  ERROR applying suffix purpose: {e}")
+            print(traceback.format_exc())
+
+        # Step 3: Strip /root wrapper and remap paths
         try:
             self._strip_root_wrapper()
         except Exception as e:
             print(f"  ERROR stripping root: {e}")
             print(traceback.format_exc())
 
-        # Step 3: Restructure _VARIANT children into VariantSets
+        # Step 4: Restructure _VARIANT children into VariantSets
         try:
             self._process_variants()
         except Exception as e:
@@ -203,6 +210,131 @@ class USDPropertiesChaser(maxUsd.ExportChaser):
                 print(f"    {prim.GetPath()}: Payload flag set")
         except Exception as e:
             print(f"    Error setting Payload flag: {e}")
+
+    # -------------------------------------------------------------------------
+    # Suffix-based purpose detection — applies to ALL prims, not just those
+    # with USD Properties modifier
+    # -------------------------------------------------------------------------
+
+    def _apply_suffix_purpose(self):
+        """
+        Traverse all prims and apply USD Purpose based on name suffixes:
+          _RENDER -> render
+          _PROXY  -> proxy
+          _GUIDE  -> guide
+        Skips prims that already have an explicit purpose (set by Step 1).
+        Also promotes unsuffixed siblings to purpose=render when a proxy/guide
+        sibling exists (otherwise default prims stay visible in all modes).
+        """
+        suffix_map = {
+            "_RENDER": UsdGeom.Tokens.render,
+            "_PROXY": UsdGeom.Tokens.proxy,
+            "_GUIDE": UsdGeom.Tokens.guide,
+        }
+        suffix_re = re.compile(r'^(.+?)_(RENDER|PROXY|GUIDE)$', re.IGNORECASE)
+
+        # Pass 1: Apply purpose from suffixes, track which parents have purpose children
+        applied = 0
+        parents_with_purpose = {}  # parent_path -> set of base names
+        for prim in self.stage.Traverse():
+            imageable = UsdGeom.Imageable(prim)
+            if not imageable:
+                continue
+            purpose_attr = imageable.GetPurposeAttr()
+            if purpose_attr and purpose_attr.HasAuthoredValue():
+                continue
+
+            match = suffix_re.match(prim.GetName())
+            if not match:
+                continue
+
+            base = match.group(1)
+            suffix_key = "_" + match.group(2).upper()
+            purpose_token = suffix_map[suffix_key]
+            imageable.CreatePurposeAttr(purpose_token)
+            print(f"    {prim.GetPath()}: Purpose = {purpose_token} (from suffix)")
+            applied += 1
+
+            parent = prim.GetParent()
+            if parent and not parent.IsPseudoRoot():
+                pkey = str(parent.GetPath())
+                if pkey not in parents_with_purpose:
+                    parents_with_purpose[pkey] = set()
+                parents_with_purpose[pkey].add(base)
+
+        # Pass 2: Promote unsuffixed siblings to render purpose
+        promoted = 0
+        for parent_path_str, base_names in parents_with_purpose.items():
+            parent_prim = self.stage.GetPrimAtPath(parent_path_str)
+            if not parent_prim or not parent_prim.IsValid():
+                continue
+            for child in parent_prim.GetChildren():
+                if child.GetName() not in base_names:
+                    continue
+                imageable = UsdGeom.Imageable(child)
+                if not imageable:
+                    continue
+                purpose_attr = imageable.GetPurposeAttr()
+                if purpose_attr and purpose_attr.HasAuthoredValue():
+                    continue
+                imageable.CreatePurposeAttr(UsdGeom.Tokens.render)
+                print(f"    {child.GetPath()}: Purpose = render (sibling has proxy/guide)")
+                promoted += 1
+
+        print(f"  Applied suffix purpose to {applied} prim(s), promoted {promoted} to render")
+
+        # Pass 3: Restructure purpose groups under intermediate Xforms
+        # e.g. Torus + Torus_PROXY -> Torus [Xform] / Torus [render] + Torus_PROXY [proxy]
+        layer = self.stage.GetRootLayer()
+        grouped = 0
+        for parent_path_str, base_names in parents_with_purpose.items():
+            parent_path = Sdf.Path(parent_path_str)
+            for base in base_names:
+                # Collect all prims in this purpose group
+                members = []  # (prim_name, prim_path)
+                base_upper = base.upper()
+                parent_prim = self.stage.GetPrimAtPath(parent_path)
+                if not parent_prim or not parent_prim.IsValid():
+                    continue
+                for child in parent_prim.GetChildren():
+                    name = child.GetName()
+                    name_upper = name.upper()
+                    if name_upper == base_upper:
+                        members.append((name, child.GetPath()))
+                    elif suffix_re.match(name) and suffix_re.match(name).group(1).upper() == base_upper:
+                        members.append((name, child.GetPath()))
+
+                if len(members) < 2:
+                    continue
+
+                group_path = parent_path.AppendChild(base)
+
+                # Copy all members to temp locations
+                temps = []
+                for name, src_path in members:
+                    tmp_name = f"__purpose_tmp_{name}"
+                    tmp_path = parent_path.AppendChild(tmp_name)
+                    Sdf.CopySpec(layer, src_path, layer, tmp_path)
+                    temps.append((name, tmp_path))
+
+                # Remove originals (including the base prim at group_path)
+                for _, src_path in members:
+                    self.stage.RemovePrim(src_path)
+
+                # Create intermediate Xform
+                UsdGeom.Xform.Define(self.stage, group_path)
+
+                # Move temps as children of the new Xform
+                for name, tmp_path in temps:
+                    dst_path = group_path.AppendChild(name)
+                    Sdf.CopySpec(layer, tmp_path, layer, dst_path)
+                    self.stage.RemovePrim(tmp_path)
+
+                grouped += len(members)
+                print(f"    Grouped {len(members)} prims under {group_path}")
+
+        if grouped:
+            print(f"  Restructured {grouped} prim(s) into purpose groups")
 
     # -------------------------------------------------------------------------
     # Root stripping — uses BatchNamespaceEdit to MOVE prims (not copy+delete)
@@ -884,8 +1016,11 @@ class USDPropertiesChaser(maxUsd.ExportChaser):
         """
         Detect _VARIANT* children and restructure into USD VariantSets.
 
-        Before: /Teapot_set/Teapot_VARIANT1, /Teapot_set/Teapot_VARIANT2
-        After:  /Teapot_set {modelVariant = {VARIANT1: Teapot, VARIANT2: Teapot}}
+        Creates an intermediate Xform with the base name and places the
+        VariantSet on it, so non-variant siblings are unaffected.
+
+        Before: /Assembly/Teapot_VARIANTA, /Assembly/Teapot_VARIANTB, /Assembly/Table
+        After:  /Assembly/Teapot {modelVariant={A,B}}, /Assembly/Table
         """
         layer = self.stage.GetRootLayer()
 
@@ -925,10 +1060,14 @@ class USDPropertiesChaser(maxUsd.ExportChaser):
                 print(f"  Invalid prim at {parent_path}, skipping variants")
                 continue
 
-            print(f"  VariantSet '{base_name}' on {parent_path} ({len(variants)} variants)")
+            # Create intermediate Xform for the variant group
+            group_path = parent_path.AppendChild(base_name)
+            group_prim = UsdGeom.Xform.Define(self.stage, group_path).GetPrim()
 
-            # Create VariantSet
-            variant_set = parent_prim.GetVariantSets().AddVariantSet("modelVariant")
+            print(f"  VariantSet '{base_name}' on {group_path} ({len(variants)} variants)")
+
+            # Create VariantSet on the intermediate prim
+            variant_set = group_prim.GetVariantSets().AddVariantSet("modelVariant")
 
             first_var = None
             for var_name, child_path in variants:
@@ -936,7 +1075,7 @@ class USDPropertiesChaser(maxUsd.ExportChaser):
                     first_var = var_name
 
                 variant_set.AddVariant(var_name)
-                variant_sel_path = parent_path.AppendVariantSelection("modelVariant", var_name)
+                variant_sel_path = group_path.AppendVariantSelection("modelVariant", var_name)
                 dst_path = variant_sel_path.AppendChild(base_name)
                 ok = Sdf.CopySpec(layer, child_path, layer, dst_path)
                 print(f"    {{{var_name}}} <- {child_path}: {'OK' if ok else 'FAIL'}")

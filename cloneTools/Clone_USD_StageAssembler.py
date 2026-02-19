@@ -587,8 +587,8 @@ def auto_assemble_stage(export_dir, default_prim_name=None, start_frame=None, en
                 has_purposes = len(purposes) > 0
                 has_variants = len(variants) > 0
 
-                # Single item, no grouping needed
-                if len(group) == 1 and not has_purposes and not has_variants:
+                # Single item - no grouping needed (a lone variant is not a useful VariantSet)
+                if len(group) == 1 and not has_purposes:
                     create_prim_recursive(group[0]['name'], prim_path)
                     continue
 
@@ -803,8 +803,8 @@ def auto_assemble_stage(export_dir, default_prim_name=None, start_frame=None, en
             has_purposes = len(purposes) > 0
             has_variants = len(variants) > 0
 
-            # Single item without suffixes - add directly
-            if len(group) == 1 and not has_purposes and not has_variants:
+            # Single item - add directly (a lone variant is not a useful VariantSet)
+            if len(group) == 1 and not has_purposes:
                 item = group[0]
                 props = read_prim_custom_data(item['filepath'], item['name'])
                 use_payload = props.get('customData', {}).get('usePayload', False) or item['is_payload']

@@ -276,7 +276,7 @@ buttonText:"Clone PowerUSD UI"
 		group "Options"
 		(
 			checkbox chk_thumbnail "Generate Thumbnails" checked:false
-			checkbox chk_hierFolders "Folders by Hierarchy" checked:true tooltip:"Mirror scene hierarchy (helper names) into subfolders."
+			checkbox chk_hierFolders "Folders by Hierarchy" checked:false tooltip:"Mirror scene hierarchy (helper names) into subfolders."
 			checkbox chk_layerFolders "Folders by Layer" checked:false tooltip:"Mirror layer hierarchy into subfolders."
 		)
 

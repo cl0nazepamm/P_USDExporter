@@ -103,27 +103,93 @@ USDPropertiesCA = attributes "USDProperties"
 	)
 )
 
--- Function to add USD properties to an object
+-- Helper: check if object already has USD Properties modifier
+fn hasUSDProperties obj =
+(
+	for mod in obj.modifiers where mod.name == "USD Properties" do return true
+	false
+)
+
+-- Recursively open all group heads in a hierarchy
+fn openGroupsRecursive obj =
+(
+	local closedGroups = #()
+	if isGroupHead obj and not isOpenGroupHead obj do
+	(
+		setGroupOpen obj true
+		append closedGroups obj
+	)
+	for child in obj.children do join closedGroups (openGroupsRecursive child)
+	closedGroups
+)
+
+-- Collect all non-group-head descendants (recursive)
+fn collectGroupMembers obj =
+(
+	local members = #()
+	for child in obj.children do
+	(
+		if isGroupHead child then
+			join members (collectGroupMembers child)
+		else
+			append members child
+	)
+	members
+)
+
+-- Function to add USD properties to an object (handles groups with instanced modifiers)
 fn addUSDProperties obj =
 (
-	local hasProps = false
-	
-	for mod in obj.modifiers do
+	if isGroupHead obj then
 	(
-		if mod.name == "USD Properties" do hasProps = true
+		-- Open all nested groups
+		local closedGroups = openGroupsRecursive obj
+
+		-- All nodes that need the modifier: group head + all members
+		local allNodes = #(obj)
+		join allNodes (collectGroupMembers obj)
+		local needsMod = for n in allNodes where not (hasUSDProperties n) collect n
+
+		if needsMod.count > 0 do
+		(
+			-- Create modifier, add to first node, add custAttributes, then instance to rest
+			local sharedMod = EmptyModifier()
+			sharedMod.name = "USD Properties"
+			addModifier needsMod[1] sharedMod
+			custAttributes.add sharedMod USDPropertiesCA
+			format "Added USD Properties to: %\n" needsMod[1].name
+
+			for i = 2 to needsMod.count do
+			(
+				addModifier needsMod[i] sharedMod
+				format "Added USD Properties (instanced) to: %\n" needsMod[i].name
+			)
+		)
+
+		-- Close groups back in reverse order
+		for i = closedGroups.count to 1 by -1 do setGroupOpen closedGroups[i] false
 	)
-	
-	if not hasProps then
+	else if isGroupMember obj then
 	(
-		local attrHolder = EmptyModifier()
-		attrHolder.name = "USD Properties"
-		addModifier obj attrHolder
-		custAttributes.add attrHolder USDPropertiesCA
-		format "Added USD Properties to: %\n" obj.name
+		-- Group member selected individually - find group head and delegate
+		local head = obj.parent
+		while head != undefined and not (isGroupHead head) do head = head.parent
+		if head != undefined then addUSDProperties head
 	)
 	else
 	(
-		format "% already has USD Properties\n" obj.name
+		if not (hasUSDProperties obj) then
+		(
+			local attrHolder = EmptyModifier()
+			attrHolder.name = "USD Properties"
+			addModifier obj attrHolder
+			custAttributes.add attrHolder USDPropertiesCA
+			format "Added USD Properties to: %\n" obj.name
+		)
+		else
+		(
+			format "% already has USD Properties\n" obj.name
+		)
 	)
 )
 
