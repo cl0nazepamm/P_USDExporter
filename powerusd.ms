@@ -415,7 +415,6 @@ buttonText:"Clone PowerUSD UI"
 		on btn_export pressed do
 		(
 			if not PowerUSD_tryLoadMS "Clone_USD_HierarchyBuilder.ms" do return false
-			PowerUSD_tryLoadMS "Clone_USD_AttributeDef.ms"
 			local rawSelection = selection as array
 			if rawSelection.count == 0 then (messageBox "No objects selected."; return false)
 
@@ -427,7 +426,12 @@ buttonText:"Clone PowerUSD UI"
 				local c = n
 				while c != undefined do (if isGroupHead c do (hasGroups = true; exit); c = c.parent)
 			)
-			if hasGroups do ::convertGroupsToDummies rawSelection
+			if hasGroups do
+			(
+				-- Group conversion may need USDPropertiesCA to preserve USD Properties modifiers.
+				if not PowerUSD_tryLoadMS "Clone_USD_AttributeDef.ms" do return false
+				::convertGroupsToDummies rawSelection
+			)
 
 			if g_PowerUSD_lastDir == undefined do g_PowerUSD_lastDir = (getDir #export)
 			local outDir = getSavePath caption:"Select Output Directory" initialDir:g_PowerUSD_lastDir

@@ -501,7 +501,8 @@ def auto_assemble_stage(export_dir, default_prim_name=None, start_frame=None, en
         ref_path = get_relative_path(usd_file, export_dir)
 
         # Create prim with the expected name
-        prim_path = parent_path.AppendChild(expected_name)
+        prim_name = make_valid_prim_name(expected_name)
+        prim_path = parent_path.AppendChild(prim_name)
         prim = stage.DefinePrim(prim_path)
 
         if use_payload:

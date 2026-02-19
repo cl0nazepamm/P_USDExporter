@@ -395,6 +395,17 @@ fn bundleCameraTargetsInExportSets exportSets =
 
 
 -- Write hierarchy metadata for Assembler as JSON
+fn jsonEscapeString s =
+(
+	local out = s as string
+	out = substituteString out "\\" "\\\\"
+	out = substituteString out "\"" "\\\""
+	out = substituteString out "\r" "\\r"
+	out = substituteString out "\n" "\\n"
+	out = substituteString out "\t" "\\t"
+	out
+)
+
 fn writeHierarchyMetadata exportSets outDir =
 (
 	local metaPath = outDir + "\\_hierarchy.json"
@@ -407,12 +418,13 @@ fn writeHierarchyMetadata exportSets outDir =
 		local parentStr = if item.parentName != undefined then item.parentName else ""
 		local subFolderStr = if item.subFolder != undefined then item.subFolder else ""
 
-		-- Escape any backslashes in subFolder for JSON
+		-- Keep folders slash-normalized and JSON-safe.
 		local safeSubFolder = substituteString subFolderStr "\\" "/"
+		local safeName = jsonEscapeString item.exportName
+		local parentJson = if parentStr == "" then "null" else ("\"" + (jsonEscapeString parentStr) + "\"")
+		local subFolderJson = if safeSubFolder == "" then "null" else ("\"" + (jsonEscapeString safeSubFolder) + "\"")
 
-		format "  \"%\": {\"parent\": %, \"subFolder\": %}" item.exportName \
-			(if parentStr == "" then "null" else ("\"" + parentStr + "\"")) \
-			(if safeSubFolder == "" then "null" else ("\"" + safeSubFolder + "\"")) to:f
+		format "  \"%\": {\"parent\": %, \"subFolder\": %}" safeName parentJson subFolderJson to:f
 
 		if i < exportSets.count then format ",\n" to:f
 		else format "\n" to:f
@@ -767,7 +779,7 @@ fn convertGroupsToDummies nodeArray =
 		)
 	)
 
-	if groupHeads.count == 0 do return ok
+	if groupHeads.count == 0 do return true
 
 	-- Sort by depth (deepest first) so innermost groups are converted first
 	local depths = for g in groupHeads collect
