@@ -114,16 +114,16 @@ class MeshWrapperChaser(maxUsd.ExportChaser):
             if not Usd.ModelAPI(parent_prim).GetKind():
                 Usd.ModelAPI(parent_prim).SetKind("component")
 
-# Register the chaser for Simple Mode exports
+# Register the chaser for bulk wrap exports
 maxUsd.ExportChaser.Register(
     MeshWrapperChaser,
     "simpleMode",
-    "Simple Mode (Wrap Meshes)",
-    "Wraps meshes in Xforms with Kind=subcomponent. Use for simple batch exports."
+    "Wrap mesh to subcomponent (for bulk)",
+    "Wraps meshes in Xforms with Kind=subcomponent. Use for bulk exports."
 )
 
 def simpleModeContext():
-    """Export context for Simple Mode - wraps meshes under Xforms."""
+    """Export context for bulk wrap mode - wraps meshes under Xforms."""
     return {
         'chaser': ['simpleMode'],
         'chaserNames': ['simpleMode']
@@ -133,9 +133,9 @@ registeredContexts = maxUsd.JobContextRegistry.ListJobContexts()
 if 'simpleModeContext' not in registeredContexts:
     maxUsd.JobContextRegistry.RegisterExportJobContext(
         "simpleModeContext",
-        "Simple Mode",
-        "Simple export mode - wraps meshes under Xforms with Kind=subcomponent",
+        "Wrap mesh to subcomponent (for bulk)",
+        "Bulk export mode - wraps meshes under Xforms with Kind=subcomponent",
         simpleModeContext
     )
 
-print("Registered Simple Mode Chaser")
+print("Registered bulk wrap mesh chaser")
