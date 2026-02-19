@@ -102,14 +102,14 @@ fn buildFolderPath layerPath =
 	return result
 )
 
--- Build folder path from scene hierarchy (organizational parent names)
-fn buildParentFolderPath obj attributedObjects =
+-- Build folder path from scene hierarchy (non-geometry parent names)
+fn buildParentFolderPath obj =
 (
 	local parts = #()
 	local current = findSceneParent obj
 	while current != undefined do
 	(
-		if findItem attributedObjects current == 0 do
+		if superClassOf current != GeometryClass do
 			insertItem current.name parts 1
 		current = findSceneParent current
 	)
@@ -504,7 +504,7 @@ fn buildAdvancedExportSets rawSelection outDir writeMetadata:true useLayers:fals
 			-- Mark all in group as processed
 			for obj in group do append processedObjects obj
 
-			local folderPath = if useLayers then buildFolderPath (getLayerPath master.layer) else buildParentFolderPath master attributedObjects
+			local folderPath = if useLayers then buildFolderPath (getLayerPath master.layer) else buildParentFolderPath master
 
 			-- Collect ALL nodes to export: all instances + their descendants without USD Properties
 			local nodesToExport = #()
@@ -584,7 +584,7 @@ fn buildAdvancedSingleExportSets rawSelection outDir writeMetadata:false useLaye
 		(
 			for obj in group do append processedObjects obj
 
-			local folderPath = if useLayers then buildFolderPath (getLayerPath master.layer) else buildParentFolderPath master attributedObjects
+			local folderPath = if useLayers then buildFolderPath (getLayerPath master.layer) else buildParentFolderPath master
 
 			local nodesToExport = #()
 			for obj in group do join nodesToExport (getDescendantsWithoutAttr obj)
