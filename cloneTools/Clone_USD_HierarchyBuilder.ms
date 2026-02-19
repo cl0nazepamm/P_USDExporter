@@ -31,6 +31,7 @@ global printHierarchyPreview
 global writeCameraSequence
 global captureViewportThumb
 global buildParentFolderPath
+global convertGroupsToDummies
 global performBatchExport
 
 struct ExportNodeData
@@ -735,6 +736,148 @@ fn captureViewportThumb nodes filePath thumbSize:256 =
 
 	unhide hiddenObjs
 	return true
+)
+
+-- Permanently convert Max groups to plain Dummy helpers in the given selection.
+-- Must be called BEFORE buildAdvancedExportSets so the export sets see plain Dummies.
+-- Group heads cause double-wrapping under Xforms in MaxUSD.
+-- Deletes each group head and replaces it with a plain Dummy that keeps the
+-- same name, transform, parent, children, and modifiers (e.g. USD Properties).
+fn convertGroupsToDummies nodeArray =
+(
+	-- Walk selection + ancestors + descendants to find every group head
+	local groupHeads = #()
+	for n in nodeArray do
+	(
+		-- Walk up
+		local current = n
+		while current != undefined do
+		(
+			if isGroupHead current and findItem groupHeads current == 0 do
+				append groupHeads current
+			current = current.parent
+		)
+		-- Walk down
+		if isGroupHead n do
+		(
+			local desc = getAllDescendants n
+			for d in desc do
+				if isGroupHead d and findItem groupHeads d == 0 do
+					append groupHeads d
+		)
+	)
+
+	if groupHeads.count == 0 do return ok
+
+	-- Sort by depth (deepest first) so innermost groups are converted first
+	local depths = for g in groupHeads collect
+	(
+		local d = 0
+		local p = g.parent
+		while p != undefined do (d += 1; p = p.parent)
+		d
+	)
+	for i = 1 to groupHeads.count do
+		for j = 1 to groupHeads.count - i do
+			if depths[j] < depths[j+1] do
+			(
+				local tg = groupHeads[j]; groupHeads[j] = groupHeads[j+1]; groupHeads[j+1] = tg
+				local td = depths[j]; depths[j] = depths[j+1]; depths[j+1] = td
+			)
+
+	for grp in groupHeads do
+	(
+		if not isValidNode grp do continue
+
+		local grpName = grp.name
+		local grpTransform = grp.transform
+		local grpParent = grp.parent
+		local grpIsHidden = grp.isHidden
+
+		-- Open group and collect children
+		setGroupOpen grp true
+		local members = for c in grp.children collect c
+
+		-- Closed groups put modifiers on MEMBERS, not the head.
+		-- Read USD Properties values from the first member that has it, then strip from all.
+		local usdPropValues = undefined
+		for m in members do
+		(
+			for modIdx = m.modifiers.count to 1 by -1 do
+			(
+				local mod = m.modifiers[modIdx]
+				if mod.name == "USD Properties" do
+				(
+					if usdPropValues == undefined do
+					(
+						usdPropValues = #(
+							mod.USD_GeomType, mod.USD_Kind, mod.USD_Purpose,
+							mod.USD_Instanceable, mod.USD_Hidden, mod.USD_Active,
+							mod.USD_AssetVersion, mod.USD_DrawMode, mod.USD_Payload
+						)
+					)
+					deleteModifier m modIdx
+				)
+			)
+		)
+		-- Also check the group head itself
+		if usdPropValues == undefined do
+		(
+			for mod in grp.modifiers where mod.name == "USD Properties" do
+			(
+				usdPropValues = #(
+					mod.USD_GeomType, mod.USD_Kind, mod.USD_Purpose,
+					mod.USD_Instanceable, mod.USD_Hidden, mod.USD_Active,
+					mod.USD_AssetVersion, mod.USD_DrawMode, mod.USD_Payload
+				)
+			)
+		)
+
+		-- Copy transform controller (preserves keyframes/animation)
+		local grpTMController = copy grp.transform.controller
+
+		-- Strip group member flags so children can be freely reparented
+		for m in members do setGroupMember m false
+
+		-- Park children temporarily
+		for m in members do
+			if isValidNode m do m.parent = grpParent
+
+		-- Nuke the group head
+		setGroupHead grp false
+		delete grp
+
+		-- Create a brand-new plain Dummy and restore animation
+		local newDummy = Dummy name:grpName isHidden:grpIsHidden
+		newDummy.transform.controller = grpTMController
+		if grpParent != undefined and isValidNode grpParent do newDummy.parent = grpParent
+
+		-- Re-create USD Properties properly (EmptyModifier + USDPropertiesCA custAttributes)
+		if usdPropValues != undefined and ::USDPropertiesCA != undefined do
+		(
+			local newMod = EmptyModifier name:"USD Properties"
+			addModifier newDummy newMod
+			custAttributes.add newMod ::USDPropertiesCA
+			newMod.USD_GeomType     = usdPropValues[1]
+			newMod.USD_Kind         = usdPropValues[2]
+			newMod.USD_Purpose      = usdPropValues[3]
+			newMod.USD_Instanceable = usdPropValues[4]
+			newMod.USD_Hidden       = usdPropValues[5]
+			newMod.USD_Active       = usdPropValues[6]
+			newMod.USD_AssetVersion = usdPropValues[7]
+			newMod.USD_DrawMode     = usdPropValues[8]
+			newMod.USD_Payload      = usdPropValues[9]
+		)
+
+		-- Reparent former members under the new Dummy
+		for m in members do
+			if isValidNode m do m.parent = newDummy
+
+		-- Add new dummy to selection (replacing deleted group head)
+		selectMore newDummy
+
+		format "  converted group '%' -> Dummy (% children)\n" grpName members.count
+	)
 )
 
 -- Batch export a list of ExportNodeData sets to USD files
