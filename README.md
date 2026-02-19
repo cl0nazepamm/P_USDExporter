@@ -42,8 +42,8 @@ Object names control assembly behavior through suffixes:
 ### Difference from standard USD export.
 
 - Reads USD Properties from Max Attribute Holders and writes them to USD prims
-- Strips the `/root` wrapper that MaxUSD adds
-- Remaps material binding paths aftwhatr restructuring
+- Strips the `/root` wrapper that MaxUSD adds (can be turned on again)
+- Remaps material binding paths
 - Handles variant set creation from `_VARIANT*` children
 - Nests `/mtl` scope under the content prim for clean referencing
 
@@ -56,6 +56,19 @@ The Clean Material Structure fixes MaxUSD's default material export to produce c
 | ![off](images/clean_off.png) | ![on](images/clean_on.png) |
 | ![off2](images/clean_off2.png) | ![on2](images/clean_on2.png) |
 
+## Installation
+
+Drag cloneTools folder to `AppData\Local\Autodesk\3dsMax\2026 - 64bit\ENU\scripts\`
+then drag every `.ms` file to 3dsmax viewport to install.
+
+## MAXUSD settings
+
+![Correct_Settings](images/Correct_Settings.png)
+
+Don't export whole scene with animation enabled. Use single export mode and send animated stuff. Use reassembler if needed.
+
 ## License
 
 MIT
+
+
